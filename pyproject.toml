@@ -1,0 +1,36 @@
+[project]
+name = "smart-document-organizer"
+version = "0.1.0"
+description = "Windows-first, local-only scanned document organizer"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { text = "MIT" }
+dependencies = [
+  "platformdirs>=4.3,<5",
+  "PyMuPDF>=1.25,<2",
+  "PySide6>=6.8,<7",
+  "rapidocr>=3,<4",
+  "onnxruntime>=1.20,<2",
+  "Pillow>=11,<13",
+  "watchdog>=5,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pyinstaller>=6.12,<7",
+  "pytest>=8.3,<10",
+]
+
+[project.scripts]
+smart-document-organizer = "smartdoc.app:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/smartdoc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

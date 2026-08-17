@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#17313b">
+  <title>智慧文件整理 2.0｜Windows 本機掃描文件整理</title>
+  <meta name="description" content="監聽掃描資料夾，在 Windows 本機完成 OCR、分類與安全改名。預設先進待確認清單，不上傳文件。">
+  <meta property="og:title" content="智慧文件整理 2.0">
+  <meta property="og:description" content="掃描完成，檔名也整理好了。Windows 本機 OCR、分類、待確認與安全復原。">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://smartdoc.leotsai.me/">
+  <meta property="og:image" content="https://leotsai.me/assets/og.png">
+  <link rel="canonical" href="https://smartdoc.leotsai.me/">
+  <link rel="stylesheet" href="styles.css?v=20260817">
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要內容</a>
+
+  <nav class="site-nav" aria-label="主要導覽">
+    <a class="brand" href="https://leotsai.me/" aria-label="回到 LeoTsai.me 首頁">
+      <span class="brand-mark" aria-hidden="true">文</span>
+      <span><strong>智慧文件整理</strong><small>LOCAL DESK 2.0</small></span>
+    </a>
+    <div class="nav-actions">
+      <span class="visit-count" title="同一瀏覽器 30 分鐘內計一次"><span class="status-led" aria-hidden="true"></span> 累計造訪 <strong data-site-visit-count>—</strong> 次</span>
+      <a href="https://github.com/ctsai0124/smart-document-organizer" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a href="https://leotsai.me/">工具首頁</a>
+    </div>
+  </nav>
+
+  <main id="main">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="status-led" aria-hidden="true"></span> WINDOWS · 完全本機處理</p>
+        <h1>掃描完成，<br><em>檔名也整理好了。</em></h1>
+        <p class="hero-lead">不用再逐一打開 <code>scan_001.pdf</code> 或 <code>IMG_401617.jpg</code>。程式會監聽掃描資料夾，在電腦上完成 OCR、分類與命名建議。</p>
+
+        <div class="hero-actions">
+          <a class="button button-primary" id="download-button" href="https://github.com/ctsai0124/smart-document-organizer/releases/latest" target="_blank" rel="noopener noreferrer">
+            <span>取得 Windows 安裝檔</span><span aria-hidden="true">↓</span>
+          </a>
+          <a class="button button-secondary" href="#how-it-works">先看使用方式</a>
+        </div>
+        <p class="release-status" id="release-status" role="status">正在確認最新版本…</p>
+
+        <ul class="trust-list" aria-label="資料處理承諾">
+          <li>OCR 在本機執行</li>
+          <li>預設不自動改名</li>
+          <li>每次改名都能復原</li>
+        </ul>
+      </div>
+
+      <div class="scanner-stage" aria-label="文件待確認清單示意">
+        <div class="scanner-window">
+          <div class="window-bar">
+            <span><i></i><i></i><i></i></span>
+            <small>智慧文件整理 2.0</small>
+            <b>LOCAL</b>
+          </div>
+          <div class="monitor-strip">
+            <span class="status-led" aria-hidden="true"></span>
+            <div><strong>背景監聽中</strong><small>C:\Users\Leo\Documents\Scans</small></div>
+            <span class="queue-count"><b>3</b><small>待確認</small></span>
+          </div>
+          <div class="queue-heading"><span>剛收到的掃描</span><span>建議檔名</span><span>信心</span></div>
+          <div class="queue-list">
+            <div class="queue-row">
+              <span class="file-name">scan_001.pdf</span>
+              <span class="rename-arrow" aria-hidden="true">→</span>
+              <strong>2026-08-17_函文_人事會議.pdf</strong>
+              <span class="confidence high">95%</span>
+            </div>
+            <div class="queue-row">
+              <span class="file-name">IMG_401617.jpg</span>
+              <span class="rename-arrow" aria-hidden="true">→</span>
+              <strong>2026-08-15_會議紀錄_主管會報.jpg</strong>
+              <span class="confidence">89%</span>
+            </div>
+            <div class="queue-row active">
+              <span class="file-name">scan_003.pdf</span>
+              <span class="rename-arrow" aria-hidden="true">→</span>
+              <strong>日期待確認_差假申請表.pdf</strong>
+              <span class="confidence review">76%</span>
+            </div>
+          </div>
+          <div class="window-footer">
+            <button type="button" tabindex="-1">套用勾選的檔名</button>
+            <span>文件內容不離開這台電腦</span>
+          </div>
+          <span class="scan-beam" aria-hidden="true"></span>
+        </div>
+        <p class="stage-caption"><span>SAFE MODE</span> 看得懂、能確認，才改名。</p>
+      </div>
+    </section>
+
+    <section class="workflow" id="how-it-works">
+      <div class="section-heading">
+        <p>安心模式的三個動作</p>
+        <h2>你只需要做最後一次確認。</h2>
+      </div>
+      <div class="steps">
+        <article>
+          <span class="step-number">1</span>
+          <h3>選擇掃描資料夾</h3>
+          <p>設定影印機會放入檔案的位置，開啟背景監聽後即可常駐系統匣。</p>
+        </article>
+        <article>
+          <span class="step-number">2</span>
+          <h3>讓本機自動判讀</h3>
+          <p>新文件寫入完成後才開始 OCR，擷取日期、機關、文號、主旨與文件類型。</p>
+        </article>
+        <article>
+          <span class="step-number">3</span>
+          <h3>勾選並套用檔名</h3>
+          <p>低信心結果留給你確認；需要時可以從處理紀錄復原，不覆蓋同名檔案。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="feature-section">
+      <div class="feature-copy">
+        <p class="section-kicker">LOCAL-FIRST</p>
+        <h2>公務文件最重要的，<br>不是炫技，是可控。</h2>
+        <p>內建規則分析不需要網路；選用 AI 時也只接受 <code>localhost</code>。檔案、OCR 文字與處理紀錄保留在 Windows 使用者資料夾。</p>
+        <a class="text-link" href="https://github.com/ctsai0124/smart-document-organizer#readme" target="_blank" rel="noopener noreferrer">閱讀完整安裝與隱私說明 <span aria-hidden="true">↗</span></a>
+      </div>
+      <div class="feature-grid">
+        <article><span>OCR</span><h3>繁中與多頁 PDF</h3><p>支援 PDF、JPG、PNG、TIFF、BMP，辨識工作在本機 ONNX Runtime 執行。</p></article>
+        <article><span>SAFE</span><h3>不覆蓋，能復原</h3><p>遇到同名自動加流水號；SQLite 留下每次操作，可以回到先前檔名。</p></article>
+        <article><span>TRAY</span><h3>系統匣安靜常駐</h3><p>使用檔案系統事件等候新文件，閒置時不反覆掃描資料夾。</p></article>
+        <article><span>RULE</span><h3>命名格式自己決定</h3><p>用日期、分類、主旨、機關或文號組合符合單位習慣的檔名。</p></article>
+      </div>
+    </section>
+
+    <section class="final-cta">
+      <span class="final-mark" aria-hidden="true">文</span>
+      <div><p>WINDOWS 10 / 11</p><h2>把開盲盒的時間，還給真正的工作。</h2></div>
+      <a class="button button-primary" href="https://github.com/ctsai0124/smart-document-organizer/releases/latest" target="_blank" rel="noopener noreferrer" data-release-link>前往最新版本 <span aria-hidden="true">↗</span></a>
+    </section>
+  </main>
+
+  <footer>
+    <span>智慧文件整理 2.0 · Leo Tsai</span>
+    <span>本頁不接收或處理任何文件</span>
+    <a href="https://leotsai.me/">回到 LeoTsai.me</a>
+  </footer>
+
+  <script defer src="https://leotsai.me/assets/site-counter.js?v=20260811-counter-fix" data-show-badge="false"></script>
+  <script defer src="app.js?v=20260817"></script>
+</body>
+</html>

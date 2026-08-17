@@ -1,0 +1,49 @@
+name: Build Windows installer
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project
+        run: python -m pip install ".[dev]"
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Build application
+        run: python -m PyInstaller --clean --noconfirm SmartDocumentOrganizer.spec
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        run: iscc installer\SmartDocumentOrganizer.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmartDocumentOrganizer-Windows
+          path: dist/installer/*.exe
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/installer/*.exe
+          generate_release_notes: true
