@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from .config import AppConfig, ConfigStore, StartupManager, packaged_startup_command
 from .database import Database
+from .fileops import SUPPORTED_EXTENSIONS
 from .models import DocumentRecord, DocumentStatus
 from .pipeline import DocumentPipeline
 from .watcher import FolderWatcher
@@ -180,6 +181,9 @@ class MainWindow(QMainWindow):
             self._page_header("待確認清單", "掃描完成後，只需要在這裡做最後一次確認。")
         )
         header_row.addStretch(1)
+        scan_existing = button("掃描資料夾既有檔案")
+        scan_existing.clicked.connect(self._scan_existing_folder)
+        header_row.addWidget(scan_existing)
         add_files = button("加入既有文件")
         add_files.clicked.connect(self._add_files)
         header_row.addWidget(add_files)
@@ -229,9 +233,9 @@ class MainWindow(QMainWindow):
         outer.addLayout(action_row)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.queue_table = QTableWidget(0, 5)
+        self.queue_table = QTableWidget(0, 6)
         self.queue_table.setHorizontalHeaderLabels(
-            ("選取", "原始檔名", "建議檔名", "分類", "信心")
+            ("選取", "原始檔名", "建議檔名", "分類", "歸檔目標", "信心")
         )
         self.queue_table.setAlternatingRowColors(True)
         self.queue_table.setSelectionBehavior(
@@ -245,7 +249,8 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self.queue_table.itemSelectionChanged.connect(self._show_selected_detail)
         splitter.addWidget(self.queue_table)
         splitter.addWidget(self._build_detail_panel())
@@ -292,7 +297,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(16)
         layout.addLayout(
-            self._page_header("處理紀錄", "每次改名都有跡可循；需要時可復原。")
+            self._page_header("處理紀錄", "每次改名與歸檔都有跡可循；需要時可復原。")
         )
         self.history_table = QTableWidget(0, 5)
         self.history_table.setHorizontalHeaderLabels(
@@ -309,7 +314,7 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self.history_table, 1)
         action_row = QHBoxLayout()
-        self.undo_button = button("復原選取項目的檔名")
+        self.undo_button = button("復原選取項目的檔名與位置")
         self.undo_button.clicked.connect(self._undo_selected)
         action_row.addWidget(self.undo_button)
         action_row.addStretch(1)
@@ -374,6 +379,52 @@ class MainWindow(QMainWindow):
         rename_form.addRow("PDF 最多辨識頁數", self.max_pages_input)
         content_layout.addWidget(rename_card)
 
+        archive_card, archive_form = self._settings_card("分類歸檔")
+        archive_hint = label(
+            "辨識到指定分類後，可在確認套用時移動，或只讓高信心文件自動移動。相對路徑會建立在監聽資料夾內。",
+            "mutedText",
+        )
+        archive_hint.setWordWrap(True)
+        archive_form.addRow("", archive_hint)
+        self.archive_rules_table = QTableWidget(0, 2)
+        self.archive_rules_table.setHorizontalHeaderLabels(("辨識分類", "目的資料夾"))
+        self.archive_rules_table.verticalHeader().setVisible(False)
+        self.archive_rules_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.archive_rules_table.setMinimumHeight(150)
+        self.archive_rules_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.archive_rules_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        archive_form.addRow("歸檔規則", self.archive_rules_table)
+        rule_actions = QWidget()
+        rule_actions_layout = QHBoxLayout(rule_actions)
+        rule_actions_layout.setContentsMargins(0, 0, 0, 0)
+        add_rule = button("新增規則")
+        add_rule.clicked.connect(lambda: self._add_archive_rule())
+        remove_rule = button("刪除規則")
+        remove_rule.clicked.connect(self._remove_archive_rule)
+        choose_archive = button("選擇目的資料夾")
+        choose_archive.clicked.connect(self._choose_archive_folder)
+        rule_actions_layout.addWidget(add_rule)
+        rule_actions_layout.addWidget(remove_rule)
+        rule_actions_layout.addWidget(choose_archive)
+        rule_actions_layout.addStretch(1)
+        archive_form.addRow("", rule_actions)
+        self.archive_on_apply_checkbox = QCheckBox("確認套用時，同時移動到分類資料夾")
+        archive_form.addRow("", self.archive_on_apply_checkbox)
+        self.auto_archive_checkbox = QCheckBox("高信心文件直接自動歸檔")
+        archive_form.addRow("", self.auto_archive_checkbox)
+        self.archive_threshold_input = QDoubleSpinBox()
+        self.archive_threshold_input.setRange(0.50, 0.99)
+        self.archive_threshold_input.setSingleStep(0.01)
+        self.archive_threshold_input.setDecimals(2)
+        archive_form.addRow("自動歸檔門檻", self.archive_threshold_input)
+        content_layout.addWidget(archive_card)
+
         ai_card, ai_form = self._settings_card("本機 AI（選用）")
         self.ai_checkbox = QCheckBox("使用 localhost 模型協助分類")
         ai_form.addRow("", self.ai_checkbox)
@@ -425,6 +476,12 @@ class MainWindow(QMainWindow):
         self.auto_checkbox.setChecked(config.auto_rename_enabled)
         self.threshold_input.setValue(config.auto_rename_threshold)
         self.max_pages_input.setValue(config.max_pdf_pages)
+        self.archive_on_apply_checkbox.setChecked(config.archive_on_apply)
+        self.auto_archive_checkbox.setChecked(config.auto_archive_enabled)
+        self.archive_threshold_input.setValue(config.auto_archive_threshold)
+        self.archive_rules_table.setRowCount(0)
+        for category, folder in config.archive_rules.items():
+            self._add_archive_rule(category, folder)
         self.ai_checkbox.setChecked(config.local_ai_enabled)
         self.ai_url_input.setText(config.local_ai_url)
         self.ai_model_input.setText(config.local_ai_model)
@@ -443,6 +500,10 @@ class MainWindow(QMainWindow):
             start_with_windows=self.startup_checkbox.isChecked(),
             max_pdf_pages=self.max_pages_input.value(),
             settle_seconds=self.get_config().settle_seconds,
+            archive_on_apply=self.archive_on_apply_checkbox.isChecked(),
+            auto_archive_enabled=self.auto_archive_checkbox.isChecked(),
+            auto_archive_threshold=self.archive_threshold_input.value(),
+            archive_rules=self._archive_rules_from_table(),
         )
         try:
             self.save_config_callback(config)
@@ -482,6 +543,10 @@ class MainWindow(QMainWindow):
 
     def refresh_queue(self) -> None:
         records = self.database.list_documents(DocumentStatus.PENDING)
+        config = self.get_config()
+        self.apply_button.setText(
+            "套用檔名與歸檔" if config.archive_on_apply else "套用勾選的檔名"
+        )
         self.current_records = {record.id: record for record in records}
         self.queue_table.setRowCount(0)
         for row, record in enumerate(records):
@@ -499,10 +564,16 @@ class MainWindow(QMainWindow):
             category = QTableWidgetItem(record.category)
             category.setFlags(category.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.queue_table.setItem(row, 3, category)
+            destination = config.archive_destination(record.category)
+            archive_target = QTableWidgetItem(str(destination) if destination else "—")
+            archive_target.setFlags(
+                archive_target.flags() & ~Qt.ItemFlag.ItemIsEditable
+            )
+            self.queue_table.setItem(row, 4, archive_target)
             confidence = QTableWidgetItem(f"{record.confidence:.0%}")
             confidence.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             confidence.setFlags(confidence.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.queue_table.setItem(row, 4, confidence)
+            self.queue_table.setItem(row, 5, confidence)
         self.pending_count.setText(str(len(records)))
         has_rows = bool(records)
         self.apply_button.setEnabled(has_rows)
@@ -586,9 +657,11 @@ class MainWindow(QMainWindow):
         if not record:
             return
         self.detail_name.setText(record.current_path.name)
-        self.detail_reason.setText(
-            f"{record.summary}｜整體信心 {record.confidence:.0%}"
-        )
+        detail = f"{record.summary}｜整體信心 {record.confidence:.0%}"
+        destination = self.get_config().archive_destination(record.category)
+        if destination:
+            detail += f"｜歸檔目標：{destination}"
+        self.detail_reason.setText(detail)
         self.confidence_bar.setValue(round(record.confidence * 100))
         self.ocr_preview.setPlainText(record.ocr_text)
         self.open_file_button.setEnabled(record.current_path.exists())
@@ -611,7 +684,11 @@ class MainWindow(QMainWindow):
         )
         try:
             restored = self.pipeline.undo(document_id)
-            QMessageBox.information(self, "檔名已復原", f"已還原為：{restored.name}")
+            QMessageBox.information(
+                self,
+                "文件已復原",
+                f"已還原檔名與位置：{restored}",
+            )
         except (OSError, ValueError, KeyError) as error:
             QMessageBox.warning(self, "無法復原", str(error))
         self.refresh_all()
@@ -626,12 +703,83 @@ class MainWindow(QMainWindow):
         for file in files:
             self.watcher.submit(Path(file))
 
+    def _scan_existing_folder(self) -> None:
+        folder = Path(self.get_config().scan_folder).expanduser()
+        try:
+            candidates = [
+                path
+                for path in folder.iterdir()
+                if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+            ]
+        except OSError as error:
+            QMessageBox.warning(self, "無法讀取資料夾", str(error))
+            return
+        if not candidates:
+            QMessageBox.information(
+                self, "沒有既有文件", "監聽資料夾內沒有支援的掃描檔案。"
+            )
+            return
+        auto_note = (
+            "\n目前已開啟高信心自動歸檔，符合門檻的文件可能會直接移動。"
+            if self.get_config().auto_archive_enabled
+            else ""
+        )
+        answer = QMessageBox.question(
+            self,
+            "掃描既有文件",
+            f"將分析資料夾內 {len(candidates)} 份既有文件；已處理過的內容會自動略過。{auto_note}\n\n要繼續嗎？",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        submitted = self.watcher.scan_existing(folder)
+        QMessageBox.information(
+            self,
+            "已加入分析佇列",
+            f"已送出 {submitted} 份文件，辨識完成後會更新待確認清單。",
+        )
+
     def _choose_scan_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(
             self, "選擇掃描資料夾", self.scan_folder_input.text()
         )
         if folder:
             self.scan_folder_input.setText(folder)
+
+    def _add_archive_rule(self, category: str = "", folder: str = "") -> None:
+        row = self.archive_rules_table.rowCount()
+        self.archive_rules_table.insertRow(row)
+        self.archive_rules_table.setItem(row, 0, QTableWidgetItem(category))
+        self.archive_rules_table.setItem(row, 1, QTableWidgetItem(folder))
+        self.archive_rules_table.setCurrentCell(row, 0)
+
+    def _remove_archive_rule(self) -> None:
+        row = self.archive_rules_table.currentRow()
+        if row >= 0:
+            self.archive_rules_table.removeRow(row)
+
+    def _choose_archive_folder(self) -> None:
+        row = self.archive_rules_table.currentRow()
+        if row < 0:
+            self._add_archive_rule()
+            row = self.archive_rules_table.currentRow()
+        current = self.archive_rules_table.item(row, 1)
+        start = current.text().strip() if current else ""
+        if not start or not Path(start).is_absolute():
+            start = self.scan_folder_input.text().strip()
+        folder = QFileDialog.getExistingDirectory(self, "選擇歸檔資料夾", start)
+        if folder:
+            self.archive_rules_table.setItem(row, 1, QTableWidgetItem(folder))
+
+    def _archive_rules_from_table(self) -> dict[str, str]:
+        rules: dict[str, str] = {}
+        for row in range(self.archive_rules_table.rowCount()):
+            category_item = self.archive_rules_table.item(row, 0)
+            folder_item = self.archive_rules_table.item(row, 1)
+            category = category_item.text().strip() if category_item else ""
+            folder = folder_item.text().strip() if folder_item else ""
+            if category and folder:
+                rules[category] = folder
+        return rules
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.allow_close:

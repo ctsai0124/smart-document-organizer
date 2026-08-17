@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from platformdirs import user_config_dir, user_data_dir
@@ -29,6 +29,10 @@ class AppConfig:
     start_with_windows: bool = False
     settle_seconds: float = 2.0
     max_pdf_pages: int = 12
+    archive_on_apply: bool = False
+    auto_archive_enabled: bool = False
+    auto_archive_threshold: float = 0.92
+    archive_rules: dict[str, str] = field(default_factory=lambda: {"考核": "考核"})
 
     def __post_init__(self) -> None:
         if not self.scan_folder:
@@ -38,6 +42,24 @@ class AppConfig:
         )
         self.settle_seconds = min(30.0, max(0.5, float(self.settle_seconds)))
         self.max_pdf_pages = min(100, max(1, int(self.max_pdf_pages)))
+        self.auto_archive_threshold = min(
+            1.0, max(0.5, float(self.auto_archive_threshold))
+        )
+        rules = self.archive_rules if isinstance(self.archive_rules, dict) else {}
+        self.archive_rules = {
+            str(category).strip(): str(folder).strip()
+            for category, folder in rules.items()
+            if str(category).strip() and str(folder).strip()
+        }
+
+    def archive_destination(self, category: str) -> Path | None:
+        configured = self.archive_rules.get(category.strip())
+        if not configured:
+            return None
+        destination = Path(os.path.expandvars(configured)).expanduser()
+        if not destination.is_absolute():
+            destination = Path(self.scan_folder).expanduser() / destination
+        return destination.resolve()
 
 
 class ConfigStore:

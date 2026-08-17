@@ -10,7 +10,7 @@ from .config import AppConfig
 from .database import Database
 from .fileops import (
     is_supported,
-    rename_safely,
+    organize_safely,
     restore_safely,
     source_fingerprint,
     wait_until_stable,
@@ -77,11 +77,21 @@ class DocumentPipeline:
                 ocr_text=ocr.text,
                 summary=analysis.reason,
             )
-            if (
+            auto_rename = (
                 config.auto_rename_enabled
                 and analysis.confidence >= config.auto_rename_threshold
-            ):
-                self.apply(document_id, suggested_name)
+            )
+            auto_archive = (
+                config.auto_archive_enabled
+                and analysis.confidence >= config.auto_archive_threshold
+                and config.archive_destination(analysis.category) is not None
+            )
+            if auto_rename or auto_archive:
+                self.apply(
+                    document_id,
+                    suggested_name if auto_rename else path.name,
+                    archive=auto_archive,
+                )
             self.on_change()
             return document_id
         except Exception as error:
@@ -94,12 +104,25 @@ class DocumentPipeline:
             with self._lock:
                 self._processing.discard(key)
 
-    def apply(self, document_id: int, proposed_name: str | None = None) -> Path:
+    def apply(
+        self,
+        document_id: int,
+        proposed_name: str | None = None,
+        *,
+        archive: bool | None = None,
+    ) -> Path:
         document = self._required_document(document_id)
         if document.status not in {DocumentStatus.PENDING, DocumentStatus.APPLIED}:
-            raise ValueError("只有待確認或已套用的文件可以改名")
-        new_path = rename_safely(
-            document.current_path, proposed_name or document.suggested_name
+            raise ValueError("只有待確認或已套用的文件可以改名或歸檔")
+        config = self.get_config()
+        should_archive = config.archive_on_apply if archive is None else archive
+        destination = (
+            config.archive_destination(document.category) if should_archive else None
+        )
+        new_path = organize_safely(
+            document.current_path,
+            proposed_name or document.suggested_name,
+            destination,
         )
         if new_path != document.current_path:
             self.database.add_rename(document.id, document.current_path, new_path)

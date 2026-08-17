@@ -19,6 +19,7 @@
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 body { margin: 0; background: var(--paper); line-height: 1.6; }
+html, body { overflow-x: hidden; }
 a { color: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
 

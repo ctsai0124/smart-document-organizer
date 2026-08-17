@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#17313b">
   <title>智慧文件整理 2.0｜Windows 本機掃描文件整理</title>
-  <meta name="description" content="監聽掃描資料夾，在 Windows 本機完成 OCR、分類與安全改名。預設先進待確認清單，不上傳文件。">
+  <meta name="description" content="監聽掃描資料夾，在 Windows 本機完成 OCR、分類、安全改名與資料夾歸檔。預設先進待確認清單，不上傳文件。">
   <meta property="og:title" content="智慧文件整理 2.0">
-  <meta property="og:description" content="掃描完成，檔名也整理好了。Windows 本機 OCR、分類、待確認與安全復原。">
+  <meta property="og:description" content="掃描完成，檔名與資料夾也整理好了。Windows 本機 OCR、分類、待確認與安全復原。">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://smartdoc.leotsai.me/">
   <meta property="og:image" content="https://leotsai.me/assets/og.png">
   <link rel="canonical" href="https://smartdoc.leotsai.me/">
-  <link rel="stylesheet" href="styles.css?v=20260817">
+  <link rel="stylesheet" href="styles.css?v=20260817-archive">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要內容</a>
@@ -33,8 +33,8 @@
     <section class="hero">
       <div class="hero-copy">
         <p class="eyebrow"><span class="status-led" aria-hidden="true"></span> WINDOWS · 完全本機處理</p>
-        <h1>掃描完成，<br><em>檔名也整理好了。</em></h1>
-        <p class="hero-lead">不用再逐一打開 <code>scan_001.pdf</code> 或 <code>IMG_401617.jpg</code>。程式會監聽掃描資料夾，在電腦上完成 OCR、分類與命名建議。</p>
+        <h1>掃描完成，<br><em>檔名與歸檔也整理好。</em></h1>
+        <p class="hero-lead">不用再逐一打開 <code>scan_001.pdf</code> 或 <code>IMG_401617.jpg</code>。程式會監聽掃描資料夾，在電腦上完成 OCR、分類、命名建議與資料夾歸檔。</p>
 
         <div class="hero-actions">
           <a class="button button-primary" id="download-button" href="https://github.com/ctsai0124/smart-document-organizer/releases/latest" target="_blank" rel="noopener noreferrer">
@@ -47,7 +47,7 @@
         <ul class="trust-list" aria-label="資料處理承諾">
           <li>OCR 在本機執行</li>
           <li>預設不自動改名</li>
-          <li>每次改名都能復原</li>
+          <li>改名與移動都能復原</li>
         </ul>
       </div>
 
@@ -80,17 +80,17 @@
             <div class="queue-row active">
               <span class="file-name">scan_003.pdf</span>
               <span class="rename-arrow" aria-hidden="true">→</span>
-              <strong>日期待確認_差假申請表.pdf</strong>
-              <span class="confidence review">76%</span>
+              <strong>2026-08-14_考核_成績考核.pdf</strong>
+              <span class="confidence high">96%</span>
             </div>
           </div>
           <div class="window-footer">
-            <button type="button" tabindex="-1">套用勾選的檔名</button>
+            <button type="button" tabindex="-1">套用檔名與歸檔</button>
             <span>文件內容不離開這台電腦</span>
           </div>
           <span class="scan-beam" aria-hidden="true"></span>
         </div>
-        <p class="stage-caption"><span>SAFE MODE</span> 看得懂、能確認，才改名。</p>
+        <p class="stage-caption"><span>SAFE MODE</span> 看得懂、能確認，才改名與移動。</p>
       </div>
     </section>
 
@@ -112,8 +112,8 @@
         </article>
         <article>
           <span class="step-number">3</span>
-          <h3>勾選並套用檔名</h3>
-          <p>低信心結果留給你確認；需要時可以從處理紀錄復原，不覆蓋同名檔案。</p>
+          <h3>確認檔名與歸檔位置</h3>
+          <p>例如辨識為「考核」後移至指定資料夾；需要時可從處理紀錄復原，不覆蓋同名檔案。</p>
         </article>
       </div>
     </section>
@@ -127,9 +127,9 @@
       </div>
       <div class="feature-grid">
         <article><span>OCR</span><h3>繁中與多頁 PDF</h3><p>支援 PDF、JPG、PNG、TIFF、BMP，辨識工作在本機 ONNX Runtime 執行。</p></article>
-        <article><span>SAFE</span><h3>不覆蓋，能復原</h3><p>遇到同名自動加流水號；SQLite 留下每次操作，可以回到先前檔名。</p></article>
+        <article><span>SAFE</span><h3>不覆蓋，能復原</h3><p>遇到同名自動加流水號；SQLite 留下每次操作，可以回到原始檔名與位置。</p></article>
         <article><span>TRAY</span><h3>系統匣安靜常駐</h3><p>使用檔案系統事件等候新文件，閒置時不反覆掃描資料夾。</p></article>
-        <article><span>RULE</span><h3>命名格式自己決定</h3><p>用日期、分類、主旨、機關或文號組合符合單位習慣的檔名。</p></article>
+        <article><span>FILE</span><h3>分類資料夾自己指定</h3><p>設定「考核 → 人事資料\考核」等規則，安心確認或高信心自動移動。</p></article>
       </div>
     </section>
 
@@ -147,6 +147,6 @@
   </footer>
 
   <script defer src="https://leotsai.me/assets/site-counter.js?v=20260811-counter-fix" data-show-badge="false"></script>
-  <script defer src="app.js?v=20260817"></script>
+  <script defer src="app.js?v=20260817-archive"></script>
 </body>
 </html>
