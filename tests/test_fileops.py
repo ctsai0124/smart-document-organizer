@@ -2,6 +2,7 @@ from pathlib import Path
 
 from smartdoc.fileops import (
     collision_safe_path,
+    organize_safely,
     rename_safely,
     restore_safely,
     sanitize_filename_stem,
@@ -34,3 +35,19 @@ def test_rename_and_restore_without_overwrite(tmp_path: Path) -> None:
     restored = restore_safely(renamed, source)
     assert restored.name == "scan_001_2.pdf"
     assert source.read_bytes() == b"occupied"
+
+
+def test_organize_moves_to_folder_and_restores(tmp_path: Path) -> None:
+    source = tmp_path / "scan_002.pdf"
+    source.write_bytes(b"assessment")
+    destination_folder = tmp_path / "人事" / "考核"
+
+    organized = organize_safely(source, "2026_考核資料.pdf", destination_folder)
+
+    assert organized == destination_folder / "2026_考核資料.pdf"
+    assert organized.read_bytes() == b"assessment"
+    assert not source.exists()
+
+    restored = restore_safely(organized, source)
+    assert restored == source
+    assert restored.read_bytes() == b"assessment"

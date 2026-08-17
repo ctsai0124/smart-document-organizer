@@ -38,3 +38,16 @@ def test_local_ai_endpoint_is_restricted_to_loopback() -> None:
     assert is_localhost_url("http://localhost:1234/v1/chat/completions")
     assert not is_localhost_url("https://api.example.com/v1/chat/completions")
     assert not is_localhost_url("file:///tmp/socket")
+
+
+def test_assessment_topic_takes_priority_over_public_document_form() -> None:
+    text = """臺北市教育局 函
+受文者：○○國民小學
+主旨：檢送本年度教職員成績考核及年終考核作業規定。
+說明：請依考核委員會決議辦理。
+"""
+
+    result = RuleBasedAnalyzer().analyze(text, ocr_confidence=0.98)
+
+    assert result.category == "考核"
+    assert "_考核_" in result.suggested_stem

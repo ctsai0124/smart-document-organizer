@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -46,15 +47,23 @@ def collision_safe_path(path: Path, source: Path | None = None) -> Path:
 
 
 def rename_safely(source: Path, proposed_name: str) -> Path:
+    return organize_safely(source, proposed_name)
+
+
+def organize_safely(
+    source: Path, proposed_name: str, destination_folder: Path | None = None
+) -> Path:
     source = source.resolve()
     if not source.exists():
         raise FileNotFoundError(f"找不到檔案：{source}")
     extension = source.suffix.lower()
     stem = sanitize_filename_stem(Path(proposed_name).stem)
-    destination = collision_safe_path(source.with_name(f"{stem}{extension}"), source)
+    folder = (destination_folder or source.parent).expanduser().resolve()
+    folder.mkdir(parents=True, exist_ok=True)
+    destination = collision_safe_path(folder / f"{stem}{extension}", source)
     if _same_path(source, destination):
         return source
-    os.replace(source, destination)
+    shutil.move(str(source), str(destination))
     return destination
 
 
@@ -62,8 +71,12 @@ def restore_safely(current: Path, original: Path) -> Path:
     current = current.resolve()
     if not current.exists():
         raise FileNotFoundError(f"找不到目前檔案：{current}")
-    destination = collision_safe_path(original.resolve(), current)
-    os.replace(current, destination)
+    original = original.expanduser().resolve()
+    original.parent.mkdir(parents=True, exist_ok=True)
+    destination = collision_safe_path(original, current)
+    if _same_path(current, destination):
+        return current
+    shutil.move(str(current), str(destination))
     return destination
 
 

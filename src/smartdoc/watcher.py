@@ -57,8 +57,7 @@ class FolderWatcher:
             self.observer.start()
             self.folder = folder
         if scan_existing:
-            for path in folder.iterdir():
-                self.submit(path)
+            self.scan_existing(folder)
 
     def stop(self) -> None:
         observer = self.observer
@@ -71,6 +70,17 @@ class FolderWatcher:
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             return
         self.executor.submit(self.pipeline.process, path)
+
+    def scan_existing(self, folder: Path) -> int:
+        folder = folder.expanduser().resolve()
+        candidates = [
+            path
+            for path in folder.iterdir()
+            if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+        ]
+        for path in candidates:
+            self.submit(path)
+        return len(candidates)
 
     def close(self) -> None:
         self.stop()

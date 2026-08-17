@@ -13,6 +13,13 @@ from .config import AppConfig
 from .fileops import sanitize_filename_stem
 from .models import AnalysisResult
 
+TOPIC_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "考核",
+        ("年終考核", "平時考核", "成績考核", "考核委員會", "考績", "考核"),
+    ),
+)
+
 CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("會議紀錄", ("會議紀錄", "會議記錄", "出席人員", "會議時間", "會議地點")),
     ("函文", ("主旨", "說明", "辦法", "函", "受文者", "發文日期", "發文字號")),
@@ -72,6 +79,15 @@ def extract_date(text: str) -> str | None:
 
 def classify(text: str) -> tuple[str, float]:
     normalized = compact_text(text)
+    for category, keywords in TOPIC_CATEGORY_RULES:
+        score = sum(
+            2 if keyword in normalized[:1000] else 1
+            for keyword in keywords
+            if keyword in normalized
+        )
+        if score:
+            return category, min(1.0, 0.55 + score / 10)
+
     best_category = "其他文件"
     best_score = 0
     for category, keywords in CATEGORY_RULES:
