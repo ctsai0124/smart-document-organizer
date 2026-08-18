@@ -75,6 +75,22 @@ QPushButton[nav="true"]:checked {
     border-radius: 10px;
 }
 
+#memoryStrip {
+    background: #EDF8F6;
+    border: 1px solid #C8E7E2;
+    border-left: 4px solid #239E96;
+    border-radius: 10px;
+}
+
+#memoryStamp {
+    background: #233640;
+    border-radius: 8px;
+    color: #DDF3F1;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 1px;
+}
+
 #statusStrip[active="false"] {
     background: #FFF2E0;
     border-color: #F0CE9E;

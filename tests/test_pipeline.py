@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from smartdoc.config import AppConfig
 from smartdoc.database import Database
 from smartdoc.models import DocumentStatus
@@ -27,6 +29,20 @@ class AssessmentOcr:
 受文者：○○國民小學
 發文日期：中華民國115年8月17日
 主旨：檢送本年度教職員成績考核及年終考核作業規定。
+說明：請提考核委員會審議。
+""",
+            confidence=0.98,
+            pages_processed=1,
+        )
+
+
+class YearlyAssessmentOcr:
+    def recognize(self, path: Path, max_pdf_pages: int = 12) -> OcrResult:
+        roc_year = 116 if "116" in path.name else 115
+        return OcrResult(
+            text=f"""臺北市教育局 函
+發文日期：中華民國{roc_year}年8月17日
+主旨：檢送{roc_year}年度教師成績考核名冊。
 說明：請提考核委員會審議。
 """,
             confidence=0.98,
@@ -132,3 +148,46 @@ def test_high_confidence_auto_archive_can_preserve_original_name(
     assert document.status == DocumentStatus.APPLIED
     assert document.current_path == destination / "scan_003.pdf"
     assert document.current_path.exists()
+
+
+def test_confirmed_original_name_teaches_future_suggestion(tmp_path: Path) -> None:
+    scan_folder = tmp_path / "scans"
+    scan_folder.mkdir()
+    database = Database(tmp_path / "documents.sqlite3")
+    config = AppConfig(
+        scan_folder=str(scan_folder),
+        naming_memory_enabled=True,
+        naming_memory_threshold=0.58,
+    )
+    pipeline = DocumentPipeline(database, YearlyAssessmentOcr(), lambda: config)
+
+    example = scan_folder / "115年度教師成績考核名冊.pdf"
+    example.write_bytes(b"assessment-115")
+    example_id = pipeline.process(example, wait_for_file=False)
+    assert example_id is not None
+    memory = pipeline.learn_name(example_id, example.name)
+    pipeline.ignore(example_id)
+    assert memory.filename_template == "{roc_year}年度教師成績{category}名冊"
+
+    incoming = scan_folder / "scan_116.pdf"
+    incoming.write_bytes(b"assessment-116")
+    incoming_id = pipeline.process(incoming, wait_for_file=False)
+    incoming_document = database.get_document(incoming_id)
+
+    assert incoming_document is not None
+    assert incoming_document.suggested_name == "116年度教師成績考核名冊.pdf"
+    assert "參考本機命名記憶" in incoming_document.summary
+
+
+def test_default_scanner_name_is_rejected_as_memory(tmp_path: Path) -> None:
+    source = tmp_path / "scan_999.pdf"
+    source.write_bytes(b"fake pdf")
+    database = Database(tmp_path / "documents.sqlite3")
+    config = AppConfig(scan_folder=str(tmp_path))
+    pipeline = DocumentPipeline(database, FakeOcr(), lambda: config)
+    document_id = pipeline.process(source, wait_for_file=False)
+
+    with pytest.raises(ValueError, match="預設檔名"):
+        pipeline.learn_name(document_id, source.name)
+
+    assert database.naming_memory_count() == 0

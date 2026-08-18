@@ -42,6 +42,9 @@ def test_main_window_builds_with_archive_settings(tmp_path: Path) -> None:
     assert window.queue_table.columnCount() == 6
     assert window.archive_rules_table.rowCount() == 1
     assert window.archive_rules_table.item(0, 0).text() == "考核"
+    assert window.pages.count() == 4
+    assert window.naming_memory_checkbox.isChecked()
+    assert window.memory_table.columnCount() == 5
 
     window.allow_close = True
     window.close()

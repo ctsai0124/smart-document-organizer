@@ -110,6 +110,7 @@ class MainWindow(QMainWindow):
         self.pages.setObjectName("pageStack")
         self.pages.addWidget(self._build_queue_page())
         self.pages.addWidget(self._build_history_page())
+        self.pages.addWidget(self._build_memory_page())
         self.pages.addWidget(self._build_settings_page())
         layout.addWidget(self.pages, 1)
         self.setCentralWidget(root)
@@ -136,7 +137,9 @@ class MainWindow(QMainWindow):
         layout.addSpacing(24)
 
         self.nav_buttons: list[QPushButton] = []
-        for index, title in enumerate(("待確認清單", "處理紀錄", "監聽設定")):
+        for index, title in enumerate(
+            ("待確認清單", "處理紀錄", "命名記憶", "監聽設定")
+        ):
             nav = QPushButton(title)
             nav.setCheckable(True)
             nav.setProperty("nav", True)
@@ -162,6 +165,8 @@ class MainWindow(QMainWindow):
             nav.setChecked(position == index)
         if index == 1:
             self.refresh_history()
+        elif index == 2:
+            self.refresh_memory()
 
     def _page_header(self, title: str, description: str) -> QVBoxLayout:
         layout = QVBoxLayout()
@@ -222,9 +227,12 @@ class MainWindow(QMainWindow):
         action_row = QHBoxLayout()
         self.apply_button = button("套用勾選的檔名", primary=True)
         self.apply_button.clicked.connect(self._apply_checked)
-        self.ignore_button = button("保留原檔名")
+        self.learn_original_button = button("保留原名並學習")
+        self.learn_original_button.clicked.connect(self._keep_and_learn_checked)
+        self.ignore_button = button("保留原名，不學習")
         self.ignore_button.clicked.connect(self._ignore_checked)
         action_row.addWidget(self.apply_button)
+        action_row.addWidget(self.learn_original_button)
         action_row.addWidget(self.ignore_button)
         action_row.addStretch(1)
         self.refresh_button = button("重新整理")
@@ -316,7 +324,76 @@ class MainWindow(QMainWindow):
         action_row = QHBoxLayout()
         self.undo_button = button("復原選取項目的檔名與位置")
         self.undo_button.clicked.connect(self._undo_selected)
+        self.learn_history_button = button("用目前檔名建立記憶")
+        self.learn_history_button.clicked.connect(self._learn_from_history)
         action_row.addWidget(self.undo_button)
+        action_row.addWidget(self.learn_history_button)
+        action_row.addStretch(1)
+        layout.addLayout(action_row)
+        return page
+
+    def _build_memory_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(16)
+        layout.addLayout(
+            self._page_header(
+                "命名記憶",
+                "只記住你明確保留或修改過的名稱；每一筆都能查看與刪除。",
+            )
+        )
+
+        strip = QFrame()
+        strip.setObjectName("memoryStrip")
+        strip_layout = QHBoxLayout(strip)
+        strip_layout.setContentsMargins(18, 14, 18, 14)
+        stamp = label("已確認", "memoryStamp")
+        stamp.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        stamp.setFixedSize(74, 34)
+        strip_layout.addWidget(stamp)
+        memory_copy = QVBoxLayout()
+        memory_copy.setSpacing(1)
+        memory_copy.addWidget(label("你的命名方式，是這裡唯一的標準", "statusTitle"))
+        memory_copy.addWidget(
+            label(
+                "系統只在相似文件達到門檻時參考，不會把 scan_001 之類的預設名稱學進去。",
+                "mutedText",
+            )
+        )
+        strip_layout.addLayout(memory_copy, 1)
+        self.memory_count = label("0", "countNumber")
+        self.memory_count.setAlignment(Qt.AlignmentFlag.AlignRight)
+        strip_layout.addWidget(self.memory_count)
+        strip_layout.addWidget(label("筆範例", "countLabel"))
+        layout.addWidget(strip)
+
+        self.memory_table = QTableWidget(0, 5)
+        self.memory_table.setHorizontalHeaderLabels(
+            ("採用檔名", "分類", "學到的格式", "原始檔名", "確認時間")
+        )
+        self.memory_table.setAlternatingRowColors(True)
+        self.memory_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.memory_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.memory_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.memory_table.verticalHeader().setVisible(False)
+        memory_header = self.memory_table.horizontalHeader()
+        memory_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        memory_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        memory_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        memory_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        memory_header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.memory_table, 1)
+
+        action_row = QHBoxLayout()
+        self.delete_memory_button = button("刪除選取的命名記憶")
+        self.delete_memory_button.setProperty("danger", True)
+        self.delete_memory_button.clicked.connect(self._delete_selected_memory)
+        action_row.addWidget(self.delete_memory_button)
         action_row.addStretch(1)
         layout.addLayout(action_row)
         return page
@@ -378,6 +455,28 @@ class MainWindow(QMainWindow):
         self.max_pages_input.setRange(1, 100)
         rename_form.addRow("PDF 最多辨識頁數", self.max_pages_input)
         content_layout.addWidget(rename_card)
+
+        memory_card, memory_form = self._settings_card("本機命名記憶")
+        memory_hint = label(
+            "從「保留原名並學習」及你手動修改後套用的檔名建立範例。內容與記憶都只保存在本機 SQLite。",
+            "mutedText",
+        )
+        memory_hint.setWordWrap(True)
+        memory_form.addRow("", memory_hint)
+        self.naming_memory_checkbox = QCheckBox("使用已確認範例改善命名建議")
+        memory_form.addRow("", self.naming_memory_checkbox)
+        self.naming_memory_threshold_input = QDoubleSpinBox()
+        self.naming_memory_threshold_input.setRange(0.35, 0.95)
+        self.naming_memory_threshold_input.setSingleStep(0.01)
+        self.naming_memory_threshold_input.setDecimals(2)
+        memory_form.addRow("相似度門檻", self.naming_memory_threshold_input)
+        threshold_hint = label(
+            "門檻越高越保守；建議先維持 0.58，由安心模式確認幾次再調整。",
+            "mutedText",
+        )
+        threshold_hint.setWordWrap(True)
+        memory_form.addRow("", threshold_hint)
+        content_layout.addWidget(memory_card)
 
         archive_card, archive_form = self._settings_card("分類歸檔")
         archive_hint = label(
@@ -476,6 +575,8 @@ class MainWindow(QMainWindow):
         self.auto_checkbox.setChecked(config.auto_rename_enabled)
         self.threshold_input.setValue(config.auto_rename_threshold)
         self.max_pages_input.setValue(config.max_pdf_pages)
+        self.naming_memory_checkbox.setChecked(config.naming_memory_enabled)
+        self.naming_memory_threshold_input.setValue(config.naming_memory_threshold)
         self.archive_on_apply_checkbox.setChecked(config.archive_on_apply)
         self.auto_archive_checkbox.setChecked(config.auto_archive_enabled)
         self.archive_threshold_input.setValue(config.auto_archive_threshold)
@@ -504,6 +605,8 @@ class MainWindow(QMainWindow):
             auto_archive_enabled=self.auto_archive_checkbox.isChecked(),
             auto_archive_threshold=self.archive_threshold_input.value(),
             archive_rules=self._archive_rules_from_table(),
+            naming_memory_enabled=self.naming_memory_checkbox.isChecked(),
+            naming_memory_threshold=self.naming_memory_threshold_input.value(),
         )
         try:
             self.save_config_callback(config)
@@ -522,6 +625,7 @@ class MainWindow(QMainWindow):
     def refresh_all(self) -> None:
         self.refresh_queue()
         self.refresh_history()
+        self.refresh_memory()
         self.refresh_monitor_status(self.watcher.running)
 
     def refresh_monitor_status(self, active: bool) -> None:
@@ -577,6 +681,7 @@ class MainWindow(QMainWindow):
         self.pending_count.setText(str(len(records)))
         has_rows = bool(records)
         self.apply_button.setEnabled(has_rows)
+        self.learn_original_button.setEnabled(has_rows)
         self.ignore_button.setEnabled(has_rows)
         if has_rows:
             self.queue_table.selectRow(0)
@@ -605,6 +710,34 @@ class MainWindow(QMainWindow):
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, record.id)
                 self.history_table.setItem(row, column, item)
+        has_records = bool(records)
+        self.undo_button.setEnabled(has_records)
+        self.learn_history_button.setEnabled(has_records)
+        if has_records:
+            self.history_table.selectRow(0)
+
+    def refresh_memory(self) -> None:
+        memories = self.database.list_naming_memories(limit=500)
+        self.memory_table.setRowCount(0)
+        for row, memory in enumerate(memories):
+            self.memory_table.insertRow(row)
+            values = (
+                memory.final_name,
+                memory.category,
+                memory.filename_template,
+                memory.source_name,
+                memory.updated_at.astimezone().strftime("%Y-%m-%d %H:%M"),
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, memory.id)
+                self.memory_table.setItem(row, column, item)
+        self.memory_count.setText(str(len(memories)))
+        self.delete_memory_button.setEnabled(bool(memories))
+        if memories:
+            self.memory_table.selectRow(0)
 
     def _checked_rows(self) -> list[tuple[int, str]]:
         selected: list[tuple[int, str]] = []
@@ -632,18 +765,82 @@ class MainWindow(QMainWindow):
         if not selected:
             return
         errors: list[str] = []
+        learned_names: list[str] = []
         for document_id, proposed_name in selected:
             try:
+                document = self.current_records.get(document_id)
                 self.pipeline.apply(document_id, proposed_name)
+                if (
+                    document
+                    and proposed_name.strip() != document.suggested_name.strip()
+                ):
+                    memory = self.pipeline.learn_name(document_id, proposed_name)
+                    learned_names.append(memory.final_name)
             except (OSError, ValueError, KeyError) as error:
                 errors.append(str(error))
         if errors:
             QMessageBox.warning(self, "部分文件未套用", "\n".join(errors[:5]))
+        if learned_names:
+            QMessageBox.information(
+                self,
+                "已更新命名記憶",
+                f"已記住 {len(learned_names)} 筆你修改後的檔名。",
+            )
         self.refresh_all()
 
     def _ignore_checked(self) -> None:
         for document_id, _ in self._checked_rows():
             self.pipeline.ignore(document_id)
+        self.refresh_all()
+
+    def _keep_and_learn_checked(self) -> None:
+        selected = self._checked_rows()
+        if not selected:
+            return
+        notes: list[str] = []
+        learned_count = 0
+        for document_id, _ in selected:
+            document = self.current_records.get(document_id)
+            if not document:
+                continue
+            try:
+                self.pipeline.learn_name(document_id, document.current_path.name)
+                learned_count += 1
+            except (OSError, ValueError, KeyError) as error:
+                notes.append(str(error))
+            finally:
+                self.pipeline.ignore(document_id)
+        if notes:
+            QMessageBox.information(
+                self,
+                "部分檔名未加入記憶",
+                "\n".join(notes[:5]),
+            )
+        if learned_count:
+            QMessageBox.information(
+                self,
+                "已記住原始檔名",
+                f"已將 {learned_count} 筆原始檔名加入本機命名記憶。",
+            )
+        self.refresh_all()
+
+    def _delete_selected_memory(self) -> None:
+        row = self.memory_table.currentRow()
+        if row < 0:
+            return
+        item = self.memory_table.item(row, 0)
+        if not item:
+            return
+        memory_id = int(item.data(Qt.ItemDataRole.UserRole))
+        filename = item.text()
+        answer = QMessageBox.question(
+            self,
+            "刪除命名記憶",
+            f"確定不再使用「{filename}」作為命名範例嗎？\n原始文件不會被刪除或改名。",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.pipeline.delete_naming_memory(memory_id)
         self.refresh_all()
 
     def _show_selected_detail(self) -> None:
@@ -691,6 +888,24 @@ class MainWindow(QMainWindow):
             )
         except (OSError, ValueError, KeyError) as error:
             QMessageBox.warning(self, "無法復原", str(error))
+        self.refresh_all()
+
+    def _learn_from_history(self) -> None:
+        row = self.history_table.currentRow()
+        if row < 0:
+            return
+        document_id = int(
+            self.history_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        )
+        try:
+            memory = self.pipeline.learn_name(document_id)
+            QMessageBox.information(
+                self,
+                "已建立命名記憶",
+                f"已將「{memory.final_name}」加入本機命名記憶。",
+            )
+        except (OSError, ValueError, KeyError) as error:
+            QMessageBox.warning(self, "無法建立命名記憶", str(error))
         self.refresh_all()
 
     def _add_files(self) -> None:

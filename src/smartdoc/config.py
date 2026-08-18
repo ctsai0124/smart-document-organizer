@@ -33,6 +33,8 @@ class AppConfig:
     auto_archive_enabled: bool = False
     auto_archive_threshold: float = 0.92
     archive_rules: dict[str, str] = field(default_factory=lambda: {"考核": "考核"})
+    naming_memory_enabled: bool = True
+    naming_memory_threshold: float = 0.58
 
     def __post_init__(self) -> None:
         if not self.scan_folder:
@@ -44,6 +46,9 @@ class AppConfig:
         self.max_pdf_pages = min(100, max(1, int(self.max_pdf_pages)))
         self.auto_archive_threshold = min(
             1.0, max(0.5, float(self.auto_archive_threshold))
+        )
+        self.naming_memory_threshold = min(
+            0.95, max(0.35, float(self.naming_memory_threshold))
         )
         rules = self.archive_rules if isinstance(self.archive_rules, dict) else {}
         self.archive_rules = {
