@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from .analyzer import LocalAIAnalyzer, RuleBasedAnalyzer
@@ -15,7 +16,12 @@ from .fileops import (
     source_fingerprint,
     wait_until_stable,
 )
-from .models import DocumentRecord, DocumentStatus
+from .learning import (
+    build_filename_template,
+    looks_like_default_filename,
+    suggest_from_memories,
+)
+from .models import DocumentRecord, DocumentStatus, NamingMemoryRecord
 from .ocr import OcrEngine
 
 LOGGER = logging.getLogger(__name__)
@@ -68,6 +74,27 @@ class DocumentPipeline:
                 template=config.filename_template,
             )
             analysis = LocalAIAnalyzer(config).analyze(ocr.text, analysis)
+            memory_suggestion = None
+            if config.naming_memory_enabled:
+                memories = self.database.list_naming_memories(
+                    category=analysis.category, limit=200
+                )
+                memory_suggestion = suggest_from_memories(
+                    memories,
+                    analysis,
+                    ocr.text,
+                    threshold=config.naming_memory_threshold,
+                )
+                if memory_suggestion:
+                    analysis = replace(
+                        analysis,
+                        suggested_stem=memory_suggestion.suggested_stem,
+                        reason=(
+                            f"{analysis.reason}；參考本機命名記憶「"
+                            f"{memory_suggestion.example_name}」"
+                            f"（相似 {memory_suggestion.similarity:.0%}）"
+                        ),
+                    )
             suggested_name = f"{analysis.suggested_stem}{path.suffix.lower()}"
             self.database.complete_analysis(
                 document_id,
@@ -80,6 +107,10 @@ class DocumentPipeline:
             auto_rename = (
                 config.auto_rename_enabled
                 and analysis.confidence >= config.auto_rename_threshold
+                and (
+                    memory_suggestion is None
+                    or memory_suggestion.similarity >= config.auto_rename_threshold
+                )
             )
             auto_archive = (
                 config.auto_archive_enabled
@@ -134,6 +165,41 @@ class DocumentPipeline:
         self._required_document(document_id)
         self.database.set_status(document_id, DocumentStatus.IGNORED)
         self.on_change()
+
+    def learn_name(
+        self, document_id: int, final_name: str | None = None
+    ) -> NamingMemoryRecord:
+        document = self._required_document(document_id)
+        chosen_name = final_name or document.current_path.name
+        if looks_like_default_filename(chosen_name):
+            raise ValueError(
+                f"「{chosen_name}」看起來是掃描器預設檔名，不會加入命名記憶"
+            )
+        if not document.ocr_text.strip():
+            raise ValueError("這份文件沒有可供學習的 OCR 文字")
+        config = self.get_config()
+        analysis = self.rule_analyzer.analyze(
+            document.ocr_text,
+            ocr_confidence=document.confidence,
+            template=config.filename_template,
+        )
+        analysis = replace(analysis, category=document.category)
+        filename_template = build_filename_template(chosen_name, analysis)
+        memory = self.database.save_naming_memory(
+            document.id,
+            source_name=document.original_path.name,
+            final_name=chosen_name,
+            filename_template=filename_template,
+            category=document.category,
+        )
+        self.on_change()
+        return memory
+
+    def delete_naming_memory(self, memory_id: int) -> bool:
+        deleted = self.database.delete_naming_memory(memory_id)
+        if deleted:
+            self.on_change()
+        return deleted
 
     def undo(self, document_id: int) -> Path:
         document = self._required_document(document_id)

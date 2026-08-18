@@ -50,3 +50,16 @@ class RenameRecord:
     to_path: Path
     created_at: datetime
     undone_at: datetime | None
+
+
+@dataclass(slots=True)
+class NamingMemoryRecord:
+    id: int
+    document_id: int
+    source_name: str
+    final_name: str
+    filename_template: str
+    category: str
+    ocr_text: str
+    created_at: datetime
+    updated_at: datetime
