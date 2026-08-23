@@ -11,6 +11,7 @@ from .config import AppConfig
 from .database import Database
 from .fileops import (
     is_supported,
+    legacy_source_fingerprint,
     organize_safely,
     restore_safely,
     source_fingerprint,
@@ -60,9 +61,34 @@ class DocumentPipeline:
             ):
                 raise TimeoutError("掃描檔在等待時間內仍持續寫入")
             fingerprint = source_fingerprint(path)
-            if self.database.has_fingerprint(fingerprint):
+            existing = self.database.get_document_by_fingerprint(fingerprint)
+            if existing and existing.status is not DocumentStatus.FAILED:
                 return None
-            document_id = self.database.create_processing(path, fingerprint)
+
+            if existing is None:
+                legacy_fingerprint = legacy_source_fingerprint(path)
+                legacy = self.database.get_document_by_fingerprint(legacy_fingerprint)
+                if legacy is not None:
+                    legacy_path = (
+                        legacy.current_path
+                        if legacy.current_path.exists()
+                        else legacy.original_path
+                    )
+                    try:
+                        same_content = (
+                            legacy_path.exists()
+                            and source_fingerprint(legacy_path) == fingerprint
+                        )
+                    except OSError:
+                        same_content = False
+                    if same_content:
+                        self.database.update_fingerprint(legacy.id, fingerprint)
+                        if legacy.status is not DocumentStatus.FAILED:
+                            return None
+
+            document_id, claimed = self.database.claim_processing(path, fingerprint)
+            if not claimed:
+                return None
             self.on_change()
 
             ocr = self.ocr_engine.recognize(path, max_pdf_pages=config.max_pdf_pages)
@@ -155,9 +181,24 @@ class DocumentPipeline:
             proposed_name or document.suggested_name,
             destination,
         )
-        if new_path != document.current_path:
-            self.database.add_rename(document.id, document.current_path, new_path)
-        self.database.update_current_path(document.id, new_path, DocumentStatus.APPLIED)
+        try:
+            if new_path != document.current_path:
+                self.database.record_move(document.id, document.current_path, new_path)
+            else:
+                self.database.update_current_path(
+                    document.id, new_path, DocumentStatus.APPLIED
+                )
+        except Exception as error:
+            if new_path != document.current_path and new_path.exists():
+                try:
+                    rolled_back = restore_safely(new_path, document.current_path)
+                    if rolled_back != document.current_path:
+                        LOGGER.critical(
+                            "Move rollback used a collision path: %s", rolled_back
+                        )
+                except OSError:
+                    LOGGER.exception("Unable to roll back failed move: %s", new_path)
+            raise RuntimeError("檔案已嘗試還原；無法寫入處理紀錄") from error
         self.on_change()
         return new_path
 
@@ -207,8 +248,23 @@ class DocumentPipeline:
         if rename is None:
             raise ValueError("這份文件沒有可復原的改名紀錄")
         restored = restore_safely(document.current_path, rename.from_path)
-        self.database.mark_rename_undone(rename.id)
-        self.database.update_current_path(document.id, restored, DocumentStatus.PENDING)
+        try:
+            self.database.record_undo(rename.id, document.id, restored)
+        except Exception as error:
+            if restored.exists():
+                try:
+                    rolled_back = organize_safely(
+                        restored,
+                        document.current_path.name,
+                        document.current_path.parent,
+                    )
+                    if rolled_back != document.current_path:
+                        LOGGER.critical(
+                            "Undo rollback used a collision path: %s", rolled_back
+                        )
+                except OSError:
+                    LOGGER.exception("Unable to roll back failed undo: %s", restored)
+            raise RuntimeError("檔案已嘗試移回目前位置；無法更新復原紀錄") from error
         self.on_change()
         return restored
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import urllib.error
 import urllib.request
@@ -12,6 +13,14 @@ from urllib.parse import urlparse
 from .config import AppConfig
 from .fileops import sanitize_filename_stem
 from .models import AnalysisResult
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep an allowed loopback request from being redirected elsewhere."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
 
 TOPIC_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
@@ -259,14 +268,20 @@ class LocalAIAnalyzer:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=45) as response:
+            opener = urllib.request.build_opener(NoRedirectHandler())
+            with opener.open(request, timeout=45) as response:
                 body = json.loads(response.read().decode("utf-8"))
             content = body["choices"][0]["message"]["content"]
-            data: dict[str, Any] = json.loads(content)
+            data: Any = json.loads(content)
+            if not isinstance(data, dict):
+                return fallback
             return self._merge(data, fallback)
         except (
+            AttributeError,
             OSError,
+            OverflowError,
             TimeoutError,
+            TypeError,
             ValueError,
             KeyError,
             IndexError,
@@ -277,10 +292,29 @@ class LocalAIAnalyzer:
     @staticmethod
     def _merge(data: dict[str, Any], fallback: AnalysisResult) -> AnalysisResult:
         base = asdict(fallback)
-        for key in base:
+        for key in (
+            "suggested_stem",
+            "category",
+            "document_date",
+            "organization",
+            "subject",
+            "document_number",
+            "reason",
+        ):
             value = data.get(key)
-            if value not in (None, ""):
-                base[key] = value
+            if isinstance(value, str) and value.strip():
+                base[key] = value.strip()[:1000]
+
+        confidence = data.get("confidence")
+        if confidence is not None:
+            try:
+                parsed_confidence = float(confidence)
+            except (TypeError, ValueError, OverflowError):
+                parsed_confidence = None
+            if parsed_confidence is not None and math.isfinite(parsed_confidence):
+                base["confidence"] = parsed_confidence
         base["suggested_stem"] = sanitize_filename_stem(str(base["suggested_stem"]))
+        base["category"] = str(base["category"])[:80]
+        base["reason"] = str(base["reason"])[:1000]
         base["confidence"] = max(0.0, min(0.99, float(base["confidence"])))
         return AnalysisResult(**base)

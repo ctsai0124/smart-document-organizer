@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -31,12 +32,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .analyzer import is_localhost_url
 from .config import AppConfig, ConfigStore, StartupManager, packaged_startup_command
 from .database import Database
 from .fileops import SUPPORTED_EXTENSIONS
 from .models import DocumentRecord, DocumentStatus
 from .pipeline import DocumentPipeline
 from .watcher import FolderWatcher
+
+LOGGER = logging.getLogger(__name__)
 
 STATUS_LABELS = {
     DocumentStatus.PROCESSING: "辨識中",
@@ -89,6 +93,8 @@ class MainWindow(QMainWindow):
         self.bridge = bridge
         self.allow_close = False
         self.current_records: dict[int, DocumentRecord] = {}
+        self.history_records: dict[int, DocumentRecord] = {}
+        self._queue_refresh_scheduled = False
 
         self.setWindowTitle("智慧文件整理 2.0")
         self.setMinimumSize(1060, 680)
@@ -316,6 +322,7 @@ class MainWindow(QMainWindow):
             QAbstractItemView.SelectionBehavior.SelectRows
         )
         self.history_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.history_table.itemSelectionChanged.connect(self._update_history_actions)
         self.history_table.verticalHeader().setVisible(False)
         self.history_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
@@ -326,8 +333,11 @@ class MainWindow(QMainWindow):
         self.undo_button.clicked.connect(self._undo_selected)
         self.learn_history_button = button("用目前檔名建立記憶")
         self.learn_history_button.clicked.connect(self._learn_from_history)
+        self.retry_history_button = button("重新處理失敗文件")
+        self.retry_history_button.clicked.connect(self._retry_from_history)
         action_row.addWidget(self.undo_button)
         action_row.addWidget(self.learn_history_button)
+        action_row.addWidget(self.retry_history_button)
         action_row.addStretch(1)
         layout.addLayout(action_row)
         return page
@@ -588,38 +598,73 @@ class MainWindow(QMainWindow):
         self.ai_model_input.setText(config.local_ai_model)
 
     def _save_settings(self) -> None:
-        config = AppConfig(
-            scan_folder=self.scan_folder_input.text().strip(),
-            monitoring_enabled=self.monitoring_checkbox.isChecked(),
-            auto_rename_enabled=self.auto_checkbox.isChecked(),
-            auto_rename_threshold=self.threshold_input.value(),
-            filename_template=self.template_input.text().strip()
-            or "{date}_{category}_{subject}",
-            local_ai_enabled=self.ai_checkbox.isChecked(),
-            local_ai_url=self.ai_url_input.text().strip(),
-            local_ai_model=self.ai_model_input.text().strip(),
-            start_with_windows=self.startup_checkbox.isChecked(),
-            max_pdf_pages=self.max_pages_input.value(),
-            settle_seconds=self.get_config().settle_seconds,
-            archive_on_apply=self.archive_on_apply_checkbox.isChecked(),
-            auto_archive_enabled=self.auto_archive_checkbox.isChecked(),
-            auto_archive_threshold=self.archive_threshold_input.value(),
-            archive_rules=self._archive_rules_from_table(),
-            naming_memory_enabled=self.naming_memory_checkbox.isChecked(),
-            naming_memory_threshold=self.naming_memory_threshold_input.value(),
-        )
+        previous = self.get_config()
+        was_running = self.watcher.running
+        previous_folder = self.watcher.folder or Path(previous.scan_folder)
+        config_saved = False
+        startup_changed = False
         try:
-            self.save_config_callback(config)
+            config = AppConfig(
+                scan_folder=self.scan_folder_input.text().strip(),
+                monitoring_enabled=self.monitoring_checkbox.isChecked(),
+                auto_rename_enabled=self.auto_checkbox.isChecked(),
+                auto_rename_threshold=self.threshold_input.value(),
+                filename_template=self.template_input.text().strip()
+                or "{date}_{category}_{subject}",
+                local_ai_enabled=self.ai_checkbox.isChecked(),
+                local_ai_url=self.ai_url_input.text().strip(),
+                local_ai_model=self.ai_model_input.text().strip(),
+                start_with_windows=self.startup_checkbox.isChecked(),
+                max_pdf_pages=self.max_pages_input.value(),
+                settle_seconds=previous.settle_seconds,
+                archive_on_apply=self.archive_on_apply_checkbox.isChecked(),
+                auto_archive_enabled=self.auto_archive_checkbox.isChecked(),
+                auto_archive_threshold=self.archive_threshold_input.value(),
+                archive_rules=self._archive_rules_from_table(),
+                naming_memory_enabled=self.naming_memory_checkbox.isChecked(),
+                naming_memory_threshold=self.naming_memory_threshold_input.value(),
+            )
+            invalid_rules = [
+                category
+                for category in config.archive_rules
+                if config.archive_destination(category) is None
+            ]
+            if invalid_rules:
+                raise ValueError(
+                    "相對歸檔路徑不可離開監聽資料夾；如需其他位置，請選擇絕對路徑。"
+                )
+            if config.local_ai_enabled and not is_localhost_url(config.local_ai_url):
+                raise ValueError("本機 AI 網址只接受 localhost、127.0.0.1 或 ::1")
+
+            Path(config.scan_folder).expanduser().mkdir(parents=True, exist_ok=True)
             StartupManager.set_enabled(
                 config.start_with_windows, packaged_startup_command()
             )
+            startup_changed = True
+            self.save_config_callback(config)
+            config_saved = True
             if config.monitoring_enabled:
                 self.watcher.start(Path(config.scan_folder))
             else:
                 self.watcher.stop()
             self.bridge.monitoring_changed.emit(self.watcher.running)
             QMessageBox.information(self, "設定已儲存", "新的監聽與命名設定已套用。")
-        except (OSError, ValueError) as error:
+        except Exception as error:
+            LOGGER.exception("Unable to apply settings")
+            try:
+                if config_saved:
+                    self.save_config_callback(previous)
+                if startup_changed:
+                    StartupManager.set_enabled(
+                        previous.start_with_windows, packaged_startup_command()
+                    )
+                if was_running:
+                    self.watcher.start(previous_folder)
+                else:
+                    self.watcher.stop()
+            except Exception:
+                LOGGER.exception("Unable to restore previous settings")
+            self.bridge.monitoring_changed.emit(self.watcher.running)
             QMessageBox.critical(self, "無法儲存設定", str(error))
 
     def refresh_all(self) -> None:
@@ -646,6 +691,36 @@ class MainWindow(QMainWindow):
         )
 
     def refresh_queue(self) -> None:
+        if self.queue_table.state() == QAbstractItemView.State.EditingState:
+            if not self._queue_refresh_scheduled:
+                self._queue_refresh_scheduled = True
+
+                def refresh_after_edit() -> None:
+                    self._queue_refresh_scheduled = False
+                    self.refresh_queue()
+
+                QTimer.singleShot(250, refresh_after_edit)
+            return
+
+        drafts: dict[int, tuple[Qt.CheckState, str]] = {}
+        selected_id: int | None = None
+        for row in range(self.queue_table.rowCount()):
+            id_item = self.queue_table.item(row, 0)
+            proposed_item = self.queue_table.item(row, 2)
+            if not id_item or not proposed_item:
+                continue
+            document_id = int(id_item.data(Qt.ItemDataRole.UserRole))
+            previous_record = self.current_records.get(document_id)
+            proposed_name = proposed_item.text()
+            if (
+                id_item.checkState() == Qt.CheckState.Checked
+                or previous_record is None
+                or proposed_name != previous_record.suggested_name
+            ):
+                drafts[document_id] = (id_item.checkState(), proposed_name)
+            if row == self.queue_table.currentRow():
+                selected_id = document_id
+
         records = self.database.list_documents(DocumentStatus.PENDING)
         config = self.get_config()
         self.apply_button.setText(
@@ -653,17 +728,19 @@ class MainWindow(QMainWindow):
         )
         self.current_records = {record.id: record for record in records}
         self.queue_table.setRowCount(0)
+        row_to_select = 0
         for row, record in enumerate(records):
             self.queue_table.insertRow(row)
             check = QTableWidgetItem()
-            check.setCheckState(Qt.CheckState.Unchecked)
+            draft = drafts.get(record.id)
+            check.setCheckState(draft[0] if draft else Qt.CheckState.Unchecked)
             check.setData(Qt.ItemDataRole.UserRole, record.id)
             check.setFlags(check.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.queue_table.setItem(row, 0, check)
             original = QTableWidgetItem(record.current_path.name)
             original.setFlags(original.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.queue_table.setItem(row, 1, original)
-            proposed = QTableWidgetItem(record.suggested_name)
+            proposed = QTableWidgetItem(draft[1] if draft else record.suggested_name)
             self.queue_table.setItem(row, 2, proposed)
             category = QTableWidgetItem(record.category)
             category.setFlags(category.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -678,13 +755,15 @@ class MainWindow(QMainWindow):
             confidence.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             confidence.setFlags(confidence.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.queue_table.setItem(row, 5, confidence)
+            if record.id == selected_id:
+                row_to_select = row
         self.pending_count.setText(str(len(records)))
         has_rows = bool(records)
         self.apply_button.setEnabled(has_rows)
         self.learn_original_button.setEnabled(has_rows)
         self.ignore_button.setEnabled(has_rows)
         if has_rows:
-            self.queue_table.selectRow(0)
+            self.queue_table.selectRow(row_to_select)
         else:
             self.detail_name.setText("待確認清單是空的")
             self.detail_reason.setText("新掃描的文件會自動出現在這裡。")
@@ -694,6 +773,7 @@ class MainWindow(QMainWindow):
 
     def refresh_history(self) -> None:
         records = self.database.list_documents(limit=500)
+        self.history_records = {record.id: record for record in records}
         self.history_table.setRowCount(0)
         for row, record in enumerate(records):
             self.history_table.insertRow(row)
@@ -709,12 +789,36 @@ class MainWindow(QMainWindow):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, record.id)
+                    if record.error:
+                        item.setToolTip(record.error)
                 self.history_table.setItem(row, column, item)
-        has_records = bool(records)
-        self.undo_button.setEnabled(has_records)
-        self.learn_history_button.setEnabled(has_records)
-        if has_records:
+        if records:
             self.history_table.selectRow(0)
+        self._update_history_actions()
+
+    def _selected_history_record(self) -> DocumentRecord | None:
+        row = self.history_table.currentRow()
+        if row < 0:
+            return None
+        item = self.history_table.item(row, 0)
+        if not item:
+            return None
+        return self.history_records.get(int(item.data(Qt.ItemDataRole.UserRole)))
+
+    def _update_history_actions(self) -> None:
+        record = self._selected_history_record()
+        can_undo = bool(
+            record
+            and record.current_path.exists()
+            and self.database.latest_active_rename(record.id) is not None
+        )
+        self.undo_button.setEnabled(can_undo)
+        self.learn_history_button.setEnabled(
+            bool(record and record.ocr_text.strip() and record.current_path.exists())
+        )
+        self.retry_history_button.setEnabled(
+            bool(record and record.status == DocumentStatus.FAILED)
+        )
 
     def refresh_memory(self) -> None:
         memories = self.database.list_naming_memories(limit=500)
@@ -776,7 +880,7 @@ class MainWindow(QMainWindow):
                 ):
                     memory = self.pipeline.learn_name(document_id, proposed_name)
                     learned_names.append(memory.final_name)
-            except (OSError, ValueError, KeyError) as error:
+            except (OSError, RuntimeError, ValueError, KeyError) as error:
                 errors.append(str(error))
         if errors:
             QMessageBox.warning(self, "部分文件未套用", "\n".join(errors[:5]))
@@ -886,9 +990,28 @@ class MainWindow(QMainWindow):
                 "文件已復原",
                 f"已還原檔名與位置：{restored}",
             )
-        except (OSError, ValueError, KeyError) as error:
+        except (OSError, RuntimeError, ValueError, KeyError) as error:
             QMessageBox.warning(self, "無法復原", str(error))
         self.refresh_all()
+
+    def _retry_from_history(self) -> None:
+        record = self._selected_history_record()
+        if record is None or record.status != DocumentStatus.FAILED:
+            return
+        source = (
+            record.current_path
+            if record.current_path.exists()
+            else record.original_path
+        )
+        if not source.exists():
+            QMessageBox.warning(self, "無法重新處理", f"找不到檔案：{source}")
+            return
+        self.watcher.submit(source)
+        QMessageBox.information(
+            self,
+            "已重新加入佇列",
+            f"將重新辨識：{source.name}",
+        )
 
     def _learn_from_history(self) -> None:
         row = self.history_table.currentRow()

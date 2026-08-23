@@ -56,3 +56,50 @@ def test_naming_memory_can_be_saved_listed_and_deleted(tmp_path: Path) -> None:
     assert database.list_naming_memories("考核")[0].id == memory.id
     assert database.delete_naming_memory(memory.id)
     assert database.naming_memory_count() == 0
+
+
+def test_failed_document_can_be_reclaimed_for_retry(tmp_path: Path) -> None:
+    database = Database(tmp_path / "documents.sqlite3")
+    source = tmp_path / "retry.pdf"
+    document_id, claimed = database.claim_processing(source, "sha256:retry")
+    assert claimed
+    database.mark_failed(document_id, "temporary error")
+
+    reclaimed_id, reclaimed = database.claim_processing(source, "sha256:retry")
+
+    assert reclaimed
+    assert reclaimed_id == document_id
+    document = database.get_document(document_id)
+    assert document is not None
+    assert document.status == DocumentStatus.PROCESSING
+    assert document.error is None
+
+
+def test_interrupted_processing_is_recovered_as_failed(tmp_path: Path) -> None:
+    database = Database(tmp_path / "documents.sqlite3")
+    source = tmp_path / "interrupted.pdf"
+    document_id = database.create_processing(source, "sha256:interrupted")
+
+    assert database.recover_interrupted_processing() == 1
+
+    document = database.get_document(document_id)
+    assert document is not None
+    assert document.status == DocumentStatus.FAILED
+    assert "重新送出" in (document.error or "")
+
+
+def test_record_move_updates_history_and_path_together(tmp_path: Path) -> None:
+    database = Database(tmp_path / "documents.sqlite3")
+    source = tmp_path / "source.pdf"
+    destination = tmp_path / "destination.pdf"
+    document_id = database.create_processing(source, "sha256:move")
+
+    rename_id = database.record_move(document_id, source, destination)
+
+    document = database.get_document(document_id)
+    rename = database.latest_active_rename(document_id)
+    assert document is not None
+    assert document.current_path == destination
+    assert document.status == DocumentStatus.APPLIED
+    assert rename is not None
+    assert rename.id == rename_id

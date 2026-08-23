@@ -27,6 +27,9 @@ class ScanEventHandler(FileSystemEventHandler):
         if not event.is_directory and hasattr(event, "dest_path"):
             self.submit(Path(event.dest_path))
 
+    def on_modified(self, event: FileSystemEvent) -> None:
+        self._handle(event)
+
     def _handle(self, event: FileSystemEvent) -> None:
         if not event.is_directory:
             self.submit(Path(event.src_path))

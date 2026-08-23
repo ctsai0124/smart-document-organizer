@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QLockFile, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
@@ -44,6 +45,9 @@ class ApplicationController:
         self.config_store = ConfigStore()
         self.config = self.config_store.load()
         self.database = Database(data_directory() / "documents.sqlite3")
+        recovered = self.database.recover_interrupted_processing()
+        if recovered:
+            LOGGER.warning("Recovered %s interrupted documents", recovered)
         self.bridge = UiBridge()
         self.pipeline = DocumentPipeline(
             self.database,
@@ -62,6 +66,7 @@ class ApplicationController:
             bridge=self.bridge,
         )
         self.tray = self._create_tray()
+        self.bridge.monitoring_changed.connect(self._update_monitor_action)
         if self.config.monitoring_enabled:
             try:
                 self.watcher.start(Path(self.config.scan_folder))
@@ -70,7 +75,7 @@ class ApplicationController:
                 self.tray.showMessage(
                     "無法啟動監聽", str(error), QSystemTrayIcon.MessageIcon.Warning
                 )
-        self.monitor_action.setText("暫停監聽" if self.watcher.running else "開始監聽")
+        self._update_monitor_action(self.watcher.running)
         self.bridge.monitoring_changed.emit(self.watcher.running)
 
     def _create_tray(self) -> QSystemTrayIcon:
@@ -97,12 +102,20 @@ class ApplicationController:
             self.window.show_and_raise()
 
     def toggle_monitoring(self) -> None:
-        if self.watcher.running:
-            self.watcher.stop()
-        else:
-            self.watcher.start(Path(self.config.scan_folder))
-        self.monitor_action.setText("暫停監聽" if self.watcher.running else "開始監聽")
+        try:
+            if self.watcher.running:
+                self.watcher.stop()
+            else:
+                self.watcher.start(Path(self.config.scan_folder))
+        except OSError as error:
+            LOGGER.exception("Unable to toggle watcher")
+            self.tray.showMessage(
+                "無法切換監聽", str(error), QSystemTrayIcon.MessageIcon.Warning
+            )
         self.bridge.monitoring_changed.emit(self.watcher.running)
+
+    def _update_monitor_action(self, active: bool) -> None:
+        self.monitor_action.setText("暫停監聽" if active else "開始監聽")
 
     def save_config(self, config: AppConfig) -> None:
         self.config_store.save(config)
@@ -120,7 +133,14 @@ def configure_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        handlers=[logging.FileHandler(log_path, encoding="utf-8")],
+        handlers=[
+            RotatingFileHandler(
+                log_path,
+                maxBytes=5 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            )
+        ],
     )
 
 
@@ -144,14 +164,27 @@ def main() -> int:
     app.setWindowIcon(make_app_icon())
     app.setStyleSheet(load_stylesheet())
 
+    instance_lock = QLockFile(str(data_directory() / "application.lock"))
+    instance_lock.setStaleLockTime(0)
+    if not instance_lock.tryLock(100):
+        QMessageBox.information(
+            None,
+            "程式已在執行",
+            "智慧文件整理已在系統匣背景執行，請從系統匣開啟。",
+        )
+        return 0
+
     if not QSystemTrayIcon.isSystemTrayAvailable():
         QMessageBox.critical(None, "無法啟動", "這台電腦目前沒有可用的系統匣。")
         return 1
 
-    controller = ApplicationController(app)
-    if not args.background:
-        controller.window.show()
-    return app.exec()
+    try:
+        controller = ApplicationController(app)
+        if not args.background:
+            controller.window.show()
+        return app.exec()
+    finally:
+        instance_lock.unlock()
 
 
 if __name__ == "__main__":

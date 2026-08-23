@@ -1,3 +1,5 @@
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from smartdoc.fileops import (
@@ -51,3 +53,37 @@ def test_organize_moves_to_folder_and_restores(tmp_path: Path) -> None:
     restored = restore_safely(organized, source)
     assert restored == source
     assert restored.read_bytes() == b"assessment"
+
+
+def test_full_fingerprint_distinguishes_files_after_first_64_kib(
+    tmp_path: Path,
+) -> None:
+    prefix = b"A" * (64 * 1024)
+    first = tmp_path / "first.pdf"
+    second = tmp_path / "second.pdf"
+    first.write_bytes(prefix + b"FIRST-DATA")
+    second.write_bytes(prefix + b"OTHER-DATA")
+    timestamp = 1_800_000_000_123_456_789
+    os.utime(first, ns=(timestamp, timestamp))
+    os.utime(second, ns=(timestamp, timestamp))
+
+    assert source_fingerprint(first) != source_fingerprint(second)
+
+
+def test_concurrent_same_name_moves_never_overwrite(tmp_path: Path) -> None:
+    first = tmp_path / "first.pdf"
+    second = tmp_path / "second.pdf"
+    first.write_bytes(b"FIRST")
+    second.write_bytes(b"SECOND")
+    destination = tmp_path / "organized"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda source: organize_safely(source, "same.pdf", destination),
+                (first, second),
+            )
+        )
+
+    assert {path.name for path in results} == {"same.pdf", "same_2.pdf"}
+    assert {path.read_bytes() for path in results} == {b"FIRST", b"SECOND"}

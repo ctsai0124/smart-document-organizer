@@ -4,6 +4,7 @@ import hashlib
 import os
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
 
@@ -18,6 +19,7 @@ WINDOWS_RESERVED = {
 }
 INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 FULLWIDTH_INVALID = str.maketrans("：／＼｜？＊＜＞＂", '--\\--*<>"')
+FILE_OPERATION_LOCK = threading.RLock()
 
 
 def is_supported(path: Path) -> bool:
@@ -53,34 +55,45 @@ def rename_safely(source: Path, proposed_name: str) -> Path:
 def organize_safely(
     source: Path, proposed_name: str, destination_folder: Path | None = None
 ) -> Path:
-    source = source.resolve()
-    if not source.exists():
-        raise FileNotFoundError(f"找不到檔案：{source}")
-    extension = source.suffix.lower()
-    stem = sanitize_filename_stem(Path(proposed_name).stem)
-    folder = (destination_folder or source.parent).expanduser().resolve()
-    folder.mkdir(parents=True, exist_ok=True)
-    destination = collision_safe_path(folder / f"{stem}{extension}", source)
-    if _same_path(source, destination):
-        return source
-    shutil.move(str(source), str(destination))
-    return destination
+    with FILE_OPERATION_LOCK:
+        source = source.resolve()
+        if not source.exists():
+            raise FileNotFoundError(f"找不到檔案：{source}")
+        extension = source.suffix.lower()
+        stem = sanitize_filename_stem(Path(proposed_name).stem)
+        folder = (destination_folder or source.parent).expanduser().resolve()
+        folder.mkdir(parents=True, exist_ok=True)
+        destination = collision_safe_path(folder / f"{stem}{extension}", source)
+        if _same_path(source, destination):
+            return source
+        shutil.move(str(source), str(destination))
+        return destination
 
 
 def restore_safely(current: Path, original: Path) -> Path:
-    current = current.resolve()
-    if not current.exists():
-        raise FileNotFoundError(f"找不到目前檔案：{current}")
-    original = original.expanduser().resolve()
-    original.parent.mkdir(parents=True, exist_ok=True)
-    destination = collision_safe_path(original, current)
-    if _same_path(current, destination):
-        return current
-    shutil.move(str(current), str(destination))
-    return destination
+    with FILE_OPERATION_LOCK:
+        current = current.resolve()
+        if not current.exists():
+            raise FileNotFoundError(f"找不到目前檔案：{current}")
+        original = original.expanduser().resolve()
+        original.parent.mkdir(parents=True, exist_ok=True)
+        destination = collision_safe_path(original, current)
+        if _same_path(current, destination):
+            return current
+        shutil.move(str(current), str(destination))
+        return destination
 
 
 def source_fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def legacy_source_fingerprint(path: Path) -> str:
+    """Return the v0.3.0 quick fingerprint for lazy database migration."""
     stat = path.stat()
     digest = hashlib.sha256()
     digest.update(str(stat.st_size).encode("ascii"))
@@ -100,6 +113,8 @@ def wait_until_stable(
     while time.monotonic() < deadline:
         try:
             stat = path.stat()
+            with path.open("rb") as handle:
+                handle.read(1)
             signature = (stat.st_size, stat.st_mtime_ns)
             if signature == last_signature and stat.st_size > 0:
                 stable_since = stable_since or time.monotonic()

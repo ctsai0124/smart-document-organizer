@@ -1,6 +1,6 @@
 [project]
 name = "smart-document-organizer"
-version = "0.3.0"
+version = "0.3.1"
 description = "Windows-first, local-only scanned document organizer"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"

@@ -1,4 +1,5 @@
 from smartdoc.analyzer import (
+    LocalAIAnalyzer,
     RuleBasedAnalyzer,
     extract_date,
     extract_organization,
@@ -51,3 +52,19 @@ def test_assessment_topic_takes_priority_over_public_document_form() -> None:
 
     assert result.category == "考核"
     assert "_考核_" in result.suggested_stem
+
+
+def test_local_ai_merge_ignores_invalid_field_types() -> None:
+    fallback = RuleBasedAnalyzer().analyze(SAMPLE_DOCUMENT, ocr_confidence=0.98)
+
+    result = LocalAIAnalyzer._merge(
+        {
+            "suggested_stem": ["invalid"],
+            "category": {"invalid": True},
+            "confidence": [],
+            "reason": 123,
+        },
+        fallback,
+    )
+
+    assert result == fallback

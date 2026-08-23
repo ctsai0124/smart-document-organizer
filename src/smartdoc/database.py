@@ -28,6 +28,9 @@ class Database:
         try:
             yield connection
             connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
         finally:
             connection.close()
 
@@ -85,6 +88,87 @@ class Database:
                 "SELECT 1 FROM documents WHERE source_fingerprint = ?", (fingerprint,)
             ).fetchone()
         return row is not None
+
+    def get_document_by_fingerprint(self, fingerprint: str) -> DocumentRecord | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM documents WHERE source_fingerprint = ?", (fingerprint,)
+            ).fetchone()
+        return self._document_from_row(row) if row else None
+
+    def update_fingerprint(self, document_id: int, fingerprint: str) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE OR IGNORE documents SET source_fingerprint = ? WHERE id = ?",
+                (fingerprint, document_id),
+            )
+        return cursor.rowcount > 0
+
+    def claim_processing(self, path: Path, fingerprint: str) -> tuple[int, bool]:
+        """Atomically create a document or reclaim a previously failed one."""
+        now = utc_now()
+        with self.connect() as connection:
+            try:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO documents (
+                        original_path, current_path, source_fingerprint, status,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(path),
+                        str(path),
+                        fingerprint,
+                        DocumentStatus.PROCESSING.value,
+                        now,
+                        now,
+                    ),
+                )
+                return int(cursor.lastrowid), True
+            except sqlite3.IntegrityError:
+                row = connection.execute(
+                    "SELECT id, status FROM documents WHERE source_fingerprint = ?",
+                    (fingerprint,),
+                ).fetchone()
+                if row is None:
+                    raise
+                document_id = int(row["id"])
+                if row["status"] != DocumentStatus.FAILED.value:
+                    return document_id, False
+                connection.execute(
+                    """
+                    UPDATE documents
+                    SET original_path = ?, current_path = ?, status = ?, error = NULL,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        str(path),
+                        str(path),
+                        DocumentStatus.PROCESSING.value,
+                        now,
+                        document_id,
+                    ),
+                )
+                return document_id, True
+
+    def recover_interrupted_processing(self) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE documents
+                SET status = ?, error = ?, updated_at = ?
+                WHERE status = ?
+                """,
+                (
+                    DocumentStatus.FAILED.value,
+                    "上次執行在辨識完成前中斷，可重新送出處理。",
+                    utc_now(),
+                    DocumentStatus.PROCESSING.value,
+                ),
+            )
+        return cursor.rowcount
 
     def create_processing(self, path: Path, fingerprint: str) -> int:
         now = utc_now()
@@ -174,10 +258,58 @@ class Database:
             )
             return int(cursor.lastrowid)
 
+    def record_move(
+        self,
+        document_id: int,
+        from_path: Path,
+        to_path: Path,
+        status: DocumentStatus = DocumentStatus.APPLIED,
+    ) -> int:
+        """Record the move and current path in one SQLite transaction."""
+        now = utc_now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO renames(document_id, from_path, to_path, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (document_id, str(from_path), str(to_path), now),
+            )
+            connection.execute(
+                """
+                UPDATE documents SET current_path = ?, status = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (str(to_path), status.value, now, document_id),
+            )
+            return int(cursor.lastrowid)
+
     def mark_rename_undone(self, rename_id: int) -> None:
         with self.connect() as connection:
             connection.execute(
                 "UPDATE renames SET undone_at = ? WHERE id = ?", (utc_now(), rename_id)
+            )
+
+    def record_undo(
+        self, rename_id: int, document_id: int, restored_path: Path
+    ) -> None:
+        """Mark a rename undone and update the document in one transaction."""
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE renames SET undone_at = ? WHERE id = ?", (now, rename_id)
+            )
+            connection.execute(
+                """
+                UPDATE documents SET current_path = ?, status = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    str(restored_path),
+                    DocumentStatus.PENDING.value,
+                    now,
+                    document_id,
+                ),
             )
 
     def get_document(self, document_id: int) -> DocumentRecord | None:
