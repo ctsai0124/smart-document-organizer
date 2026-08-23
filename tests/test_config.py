@@ -47,3 +47,26 @@ def test_invalid_config_returns_defaults(tmp_path: Path) -> None:
     loaded = ConfigStore(path).load()
 
     assert loaded.filename_template == "{date}_{category}_{subject}"
+
+
+def test_relative_archive_destination_cannot_escape_scan_folder(
+    tmp_path: Path,
+) -> None:
+    scan_folder = tmp_path / "scans"
+    config = AppConfig(
+        scan_folder=str(scan_folder), archive_rules={"考核": "../outside"}
+    )
+
+    assert config.archive_destination("考核") is None
+
+
+def test_absolute_archive_destination_may_be_outside_scan_folder(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "outside"
+    config = AppConfig(
+        scan_folder=str(tmp_path / "scans"),
+        archive_rules={"考核": str(destination)},
+    )
+
+    assert config.archive_destination("考核") == destination

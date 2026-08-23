@@ -63,7 +63,10 @@ class AppConfig:
             return None
         destination = Path(os.path.expandvars(configured)).expanduser()
         if not destination.is_absolute():
-            destination = Path(self.scan_folder).expanduser() / destination
+            scan_root = Path(self.scan_folder).expanduser().resolve()
+            destination = (scan_root / destination).resolve()
+            if not destination.is_relative_to(scan_root):
+                return None
         return destination.resolve()
 
 

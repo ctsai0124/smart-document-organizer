@@ -4,6 +4,7 @@ import pytest
 
 from smartdoc.config import AppConfig
 from smartdoc.database import Database
+from smartdoc.fileops import legacy_source_fingerprint, source_fingerprint
 from smartdoc.models import DocumentStatus
 from smartdoc.ocr import OcrResult
 from smartdoc.pipeline import DocumentPipeline
@@ -48,6 +49,17 @@ class YearlyAssessmentOcr:
             confidence=0.98,
             pages_processed=1,
         )
+
+
+class FlakyOcr:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def recognize(self, path: Path, max_pdf_pages: int = 12) -> OcrResult:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("temporary OCR error")
+        return OcrResult(text=OCR_TEXT, confidence=0.98, pages_processed=1)
 
 
 def test_pending_apply_and_undo(tmp_path: Path) -> None:
@@ -191,3 +203,92 @@ def test_default_scanner_name_is_rejected_as_memory(tmp_path: Path) -> None:
         pipeline.learn_name(document_id, source.name)
 
     assert database.naming_memory_count() == 0
+
+
+def test_failed_ocr_can_retry_same_unchanged_file(tmp_path: Path) -> None:
+    source = tmp_path / "scan_retry.pdf"
+    source.write_bytes(b"retry")
+    database = Database(tmp_path / "documents.sqlite3")
+    ocr = FlakyOcr()
+    pipeline = DocumentPipeline(
+        database, ocr, lambda: AppConfig(scan_folder=str(tmp_path))
+    )
+
+    first_id = pipeline.process(source, wait_for_file=False)
+    second_id = pipeline.process(source, wait_for_file=False)
+
+    assert first_id is not None
+    assert second_id == first_id
+    assert ocr.calls == 2
+    document = database.get_document(first_id)
+    assert document is not None
+    assert document.status == DocumentStatus.PENDING
+
+
+def test_database_failure_after_move_rolls_file_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "scan_db.pdf"
+    source.write_bytes(b"database")
+    database = Database(tmp_path / "documents.sqlite3")
+    pipeline = DocumentPipeline(
+        database, FakeOcr(), lambda: AppConfig(scan_folder=str(tmp_path))
+    )
+    document_id = pipeline.process(source, wait_for_file=False)
+    assert document_id is not None
+
+    def fail_record(*args, **kwargs):
+        raise OSError("simulated database write failure")
+
+    monkeypatch.setattr(database, "record_move", fail_record)
+    with pytest.raises(RuntimeError, match="無法寫入處理紀錄"):
+        pipeline.apply(document_id, "renamed.pdf")
+
+    document = database.get_document(document_id)
+    assert document is not None
+    assert source.exists()
+    assert not (tmp_path / "renamed.pdf").exists()
+    assert document.current_path == source
+    assert document.status == DocumentStatus.PENDING
+
+
+def test_legacy_fingerprint_is_lazily_migrated(tmp_path: Path) -> None:
+    source = tmp_path / "legacy.pdf"
+    source.write_bytes(b"legacy-content")
+    database = Database(tmp_path / "documents.sqlite3")
+    document_id = database.create_processing(source, legacy_source_fingerprint(source))
+    database.complete_analysis(
+        document_id,
+        suggested_name="legacy.pdf",
+        confidence=0.9,
+        category="函文",
+        ocr_text=OCR_TEXT,
+        summary="legacy",
+    )
+    database.set_status(document_id, DocumentStatus.IGNORED)
+    pipeline = DocumentPipeline(
+        database, FakeOcr(), lambda: AppConfig(scan_folder=str(tmp_path))
+    )
+
+    assert pipeline.process(source, wait_for_file=False) is None
+    migrated = database.get_document_by_fingerprint(source_fingerprint(source))
+    assert migrated is not None
+    assert migrated.id == document_id
+
+
+def test_identical_content_with_different_mtime_is_processed_once(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.pdf"
+    second = tmp_path / "second.pdf"
+    first.write_bytes(b"same-content")
+    second.write_bytes(b"same-content")
+    first.touch()
+    database = Database(tmp_path / "documents.sqlite3")
+    pipeline = DocumentPipeline(
+        database, FakeOcr(), lambda: AppConfig(scan_folder=str(tmp_path))
+    )
+
+    assert pipeline.process(first, wait_for_file=False) is not None
+    assert pipeline.process(second, wait_for_file=False) is None
+    assert len(database.list_documents()) == 1

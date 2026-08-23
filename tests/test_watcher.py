@@ -1,7 +1,9 @@
 from pathlib import Path
 from threading import Event, Lock
 
-from smartdoc.watcher import FolderWatcher
+from watchdog.events import FileModifiedEvent
+
+from smartdoc.watcher import FolderWatcher, ScanEventHandler
 
 
 class RecordingPipeline:
@@ -33,3 +35,13 @@ def test_scan_existing_submits_only_supported_files(tmp_path: Path) -> None:
 
     assert submitted == 2
     assert {path.name for path in pipeline.paths} == {"scan.pdf", "photo.JPG"}
+
+
+def test_modified_supported_file_is_resubmitted(tmp_path: Path) -> None:
+    submitted: list[Path] = []
+    source = tmp_path / "long-running-scan.pdf"
+    handler = ScanEventHandler(submitted.append)
+
+    handler.on_modified(FileModifiedEvent(str(source)))
+
+    assert submitted == [source]
