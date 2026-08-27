@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QSignalSpy
 
 from smartdoc.config import AppConfig, ConfigStore
 from smartdoc.database import Database
@@ -47,6 +48,15 @@ def test_main_window_builds_with_archive_settings(tmp_path: Path) -> None:
     assert window.naming_memory_checkbox.isChecked()
     assert window.memory_table.columnCount() == 5
     assert not window.retry_history_button.isEnabled()
+    assert window.monitor_toggle_button.text() == "開始監聽"
+
+    toggle_spy = QSignalSpy(bridge.monitoring_toggle_requested)
+    window.monitor_toggle_button.click()
+    assert toggle_spy.count() == 1
+    window.refresh_monitor_status(True)
+    assert window.monitor_toggle_button.text() == "停止監聽"
+    window.refresh_monitor_status(False)
+    assert window.monitor_toggle_button.text() == "開始監聽"
 
     first = tmp_path / "first.pdf"
     first.write_bytes(b"first")

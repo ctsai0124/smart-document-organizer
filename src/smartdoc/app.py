@@ -67,6 +67,7 @@ class ApplicationController:
         )
         self.tray = self._create_tray()
         self.bridge.monitoring_changed.connect(self._update_monitor_action)
+        self.bridge.monitoring_toggle_requested.connect(self.toggle_monitoring)
         if self.config.monitoring_enabled:
             try:
                 self.watcher.start(Path(self.config.scan_folder))
@@ -84,7 +85,7 @@ class ApplicationController:
         menu = QMenu()
         show_action = menu.addAction("開啟待確認清單")
         show_action.triggered.connect(self.window.show_and_raise)
-        self.monitor_action = menu.addAction("暫停監聽")
+        self.monitor_action = menu.addAction("停止監聽")
         self.monitor_action.triggered.connect(self.toggle_monitoring)
         menu.addSeparator()
         quit_action = menu.addAction("結束程式")
@@ -115,7 +116,7 @@ class ApplicationController:
         self.bridge.monitoring_changed.emit(self.watcher.running)
 
     def _update_monitor_action(self, active: bool) -> None:
-        self.monitor_action.setText("暫停監聽" if active else "開始監聽")
+        self.monitor_action.setText("停止監聽" if active else "開始監聽")
 
     def save_config(self, config: AppConfig) -> None:
         self.config_store.save(config)

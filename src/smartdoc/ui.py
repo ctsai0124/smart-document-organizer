@@ -54,6 +54,7 @@ STATUS_LABELS = {
 class UiBridge(QObject):
     data_changed = Signal()
     monitoring_changed = Signal(bool)
+    monitoring_toggle_requested = Signal()
 
 
 def label(text: str, object_name: str | None = None) -> QLabel:
@@ -218,6 +219,13 @@ class MainWindow(QMainWindow):
         status_copy.addWidget(self.monitor_title)
         status_copy.addWidget(self.folder_label)
         status_layout.addLayout(status_copy, 1)
+        self.monitor_toggle_button = button("停止監聽")
+        self.monitor_toggle_button.setObjectName("monitorToggle")
+        self.monitor_toggle_button.setToolTip("停止接收新掃描，不會結束程式。")
+        self.monitor_toggle_button.clicked.connect(
+            self.bridge.monitoring_toggle_requested.emit
+        )
+        status_layout.addWidget(self.monitor_toggle_button)
         count_copy = QVBoxLayout()
         count_copy.setSpacing(0)
         self.pending_count = label("0", "countNumber")
@@ -683,6 +691,10 @@ class MainWindow(QMainWindow):
         self.status_dot.style().polish(self.status_dot)
         self.monitor_title.setText("背景監聽中" if active else "背景監聽已暫停")
         self.folder_label.setText(config.scan_folder)
+        self.monitor_toggle_button.setText("停止監聽" if active else "開始監聽")
+        self.monitor_toggle_button.setProperty("primary", not active)
+        self.monitor_toggle_button.style().unpolish(self.monitor_toggle_button)
+        self.monitor_toggle_button.style().polish(self.monitor_toggle_button)
         self.sidebar_monitor.setText("● 正在監聽" if active else "● 已暫停")
         self.sidebar_monitor.setStyleSheet(
             "color: #73D4CA; font-weight: 700; padding: 4px 0;"

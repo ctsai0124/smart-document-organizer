@@ -1,5 +1,5 @@
 #define MyAppName "智慧文件整理 2.0"
-#define MyAppVersion "0.3.1"
+#define MyAppVersion "0.3.2"
 #define MyAppPublisher "LocalDesk"
 #define MyAppExeName "SmartDocumentOrganizer.exe"
 
