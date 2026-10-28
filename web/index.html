@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#17313b">
   <title>智慧文件整理 2.0｜Windows 本機掃描文件整理</title>
-  <meta name="description" content="監聽掃描資料夾，在 Windows 本機完成 OCR、分類、安全改名、資料夾歸檔與命名習慣學習。預設先進待確認清單，不上傳文件。">
+  <meta name="description" content="監聽掃描資料夾，在 Windows 本機完成 OCR、分類、安全改名、資料夾歸檔與人工校正學習。預設先進待確認清單，不上傳文件。">
   <meta property="og:title" content="智慧文件整理 2.0">
-  <meta property="og:description" content="掃描完成，也記住你的命名方式。Windows 本機 OCR、分類、命名記憶、歸檔與安全復原。">
+  <meta property="og:description" content="掃描完成，也記住你確認過的分類與命名方式。Windows 本機 OCR、校正學習、歸檔與安全復原。">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://smartdoc.leotsai.me/">
   <meta property="og:image" content="https://leotsai.me/assets/og.png">
@@ -38,8 +38,8 @@
         <p class="hero-lead">不用再逐一打開 <code>scan_001.pdf</code>。程式在本機完成 OCR、分類與歸檔；你保留或修改過的名稱，會成為下一份相似文件的命名參考。</p>
 
         <div class="hero-actions">
-          <a class="button button-primary download-action" id="download-button" href="https://github.com/ctsai0124/smart-document-organizer/releases/download/v0.4.0/SmartDocumentOrganizer-Setup-0.4.0.exe" rel="noopener noreferrer" data-release-link>
-            <span data-release-label>下載 Windows 0.4.0</span><span aria-hidden="true" data-release-icon>↓</span>
+          <a class="button button-primary download-action" id="download-button" href="https://github.com/ctsai0124/smart-document-organizer/releases/download/v0.5.0/SmartDocumentOrganizer-Setup-0.5.0.exe" rel="noopener noreferrer" data-release-link>
+            <span data-release-label>下載 Windows 0.5.0</span><span aria-hidden="true" data-release-icon>↓</span>
           </a>
           <a class="button button-secondary" href="#how-it-works">查看使用方式</a>
         </div>
@@ -51,8 +51,8 @@
         <div class="release-guidance" role="note">
           <p><strong>安裝提醒</strong> 安裝檔尚未簽章，Windows SmartScreen 第一次執行時可能顯示來源提醒。</p>
           <div class="release-meta-links">
-            <a id="release-details-link" href="https://github.com/ctsai0124/smart-document-organizer/releases/tag/v0.4.0" target="_blank" rel="noopener noreferrer">版本說明 <span aria-hidden="true">↗</span></a>
-            <a id="checksum-link" href="https://github.com/ctsai0124/smart-document-organizer/releases/download/v0.4.0/SmartDocumentOrganizer-Setup-0.4.0.exe.sha256">SHA-256 校驗檔 <span aria-hidden="true">↓</span></a>
+            <a id="release-details-link" href="https://github.com/ctsai0124/smart-document-organizer/releases/tag/v0.5.0" target="_blank" rel="noopener noreferrer">版本說明 <span aria-hidden="true">↗</span></a>
+            <a id="checksum-link" href="https://github.com/ctsai0124/smart-document-organizer/releases/download/v0.5.0/SmartDocumentOrganizer-Setup-0.5.0.exe.sha256">SHA-256 校驗檔 <span aria-hidden="true">↓</span></a>
           </div>
         </div>
         <noscript><p class="no-script-note">目前顯示網站最後確認的版本；如要檢查更新，請開啟上方「版本說明」。</p></noscript>
@@ -60,7 +60,7 @@
         <ul class="trust-list" aria-label="資料處理承諾">
           <li>OCR 在本機執行</li>
           <li>預設不自動改名</li>
-          <li>命名記憶只留在本機</li>
+          <li>學習記憶只留在本機</li>
         </ul>
       </div>
 
@@ -68,7 +68,7 @@
         <div class="scanner-window" aria-hidden="true">
           <div class="window-bar">
             <span><i></i><i></i><i></i></span>
-            <small>智慧文件整理 v0.4.0</small>
+            <small>智慧文件整理 v0.5.0</small>
             <b>LOCAL</b>
           </div>
           <div class="monitor-strip">
@@ -132,7 +132,7 @@
         <article>
           <span class="step-number">3</span>
           <h3>確認、修改，或保留原名</h3>
-          <p>你的修改會成為本機命名範例；選擇不學習也可以，每一筆記憶都能查看與刪除。</p>
+          <p>可校正分類、日期、機關、主旨與文號；只有按下儲存才會學習，每一筆記憶都能查看與刪除。</p>
         </article>
       </div>
     </section>
@@ -147,7 +147,7 @@
       <div class="feature-grid">
         <article><span>OCR</span><h3>進度看得見</h3><p>顯示等待、OCR、分析、命名記憶與儲存階段，也會標示經過時間。</p></article>
         <article><span>SAFE</span><h3>不覆蓋，能重試</h3><p>同名操作依序加上流水號；暫時辨識失敗可重新處理，資料庫異常時會嘗試補償移回。</p></article>
-        <article><span>MEM</span><h3>越確認，越符合習慣</h3><p>相似文件才引用已確認範例，並清楚顯示參考來源與相似度。</p></article>
+        <article><span>MEM</span><h3>校正後才會學習</h3><p>相似文件才參考已確認分類，並重新擷取自己的主旨、日期與文號，不照抄舊值。</p></article>
         <article><span>FILE</span><h3>分類資料夾自己指定</h3><p>設定「考核 → 人事資料\考核」等規則，安心確認或高信心自動移動。</p></article>
       </div>
     </section>
@@ -155,7 +155,7 @@
     <section class="final-cta">
       <span class="final-mark" aria-hidden="true">文</span>
       <div><p>WINDOWS 10 / 11</p><h2>把開盲盒的時間，還給真正的工作。</h2></div>
-      <a class="button button-primary download-action" href="https://github.com/ctsai0124/smart-document-organizer/releases/download/v0.4.0/SmartDocumentOrganizer-Setup-0.4.0.exe" rel="noopener noreferrer" data-release-link><span data-release-label>下載 Windows 0.4.0</span> <span aria-hidden="true" data-release-icon>↓</span></a>
+      <a class="button button-primary download-action" href="https://github.com/ctsai0124/smart-document-organizer/releases/download/v0.5.0/SmartDocumentOrganizer-Setup-0.5.0.exe" rel="noopener noreferrer" data-release-link><span data-release-label>下載 Windows 0.5.0</span> <span aria-hidden="true" data-release-icon>↓</span></a>
     </section>
   </main>
 
