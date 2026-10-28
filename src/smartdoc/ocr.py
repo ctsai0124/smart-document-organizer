@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import io
+import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -22,48 +23,78 @@ class RapidOcrEngine:
 
     def __init__(self) -> None:
         self._engine: Any | None = None
+        self._engine_lock = threading.Lock()
+        self._recognize_lock = threading.Lock()
 
     def _get_engine(self) -> Any:
         if self._engine is None:
-            from rapidocr import RapidOCR
+            with self._engine_lock:
+                if self._engine is None:
+                    from rapidocr import RapidOCR
 
-            self._engine = RapidOCR()
+                    self._engine = RapidOCR()
         return self._engine
 
     def recognize(self, path: Path, max_pdf_pages: int = 12) -> OcrResult:
         suffix = path.suffix.lower()
         if suffix == ".pdf":
-            images = self._render_pdf(path, max_pdf_pages)
-        else:
-            images = [str(path)]
+            return self._recognize_pdf(path, max_pdf_pages)
+
+        texts, scores = self._recognize_image(str(path))
+        return OcrResult(
+            text="\n".join(texts),
+            confidence=sum(scores) / len(scores) if scores else 0.0,
+            pages_processed=1,
+        )
+
+    def _recognize_pdf(self, path: Path, max_pages: int) -> OcrResult:
+        import pymupdf
+        from PIL import Image
 
         page_texts: list[str] = []
         scores: list[float] = []
         pages_processed = 0
-        engine = self._get_engine()
-        for page_number, image in enumerate(images, start=1):
-            pages_processed = page_number
-            result = engine(image)
-            texts, page_scores = self._unpack_result(result)
-            if texts:
-                page_texts.append(f"--- 第 {page_number} 頁 ---\n" + "\n".join(texts))
-                scores.extend(page_scores)
-        text = "\n\n".join(page_texts)
+        with pymupdf.open(path) as document:
+            for page_number, page in enumerate(
+                document.pages(0, min(len(document), max_pages)), start=1
+            ):
+                pages_processed = page_number
+                embedded_text = page.get_text("text").strip()
+                if len(embedded_text) >= 40:
+                    texts = [embedded_text]
+                    page_scores = [1.0]
+                else:
+                    pixmap = page.get_pixmap(
+                        matrix=pymupdf.Matrix(2.0, 2.0), alpha=False
+                    )
+                    image = Image.frombytes(
+                        "RGB", (pixmap.width, pixmap.height), pixmap.samples
+                    )
+                    texts, page_scores = self._recognize_image(image)
+                if texts:
+                    page_texts.append(
+                        f"--- 第 {page_number} 頁 ---\n" + "\n".join(texts)
+                    )
+                    scores.extend(page_scores)
+                if self._has_document_header("\n".join(page_texts)):
+                    break
         return OcrResult(
-            text=text,
+            text="\n\n".join(page_texts),
             confidence=sum(scores) / len(scores) if scores else 0.0,
             pages_processed=pages_processed,
         )
 
-    @staticmethod
-    def _render_pdf(path: Path, max_pages: int):
-        import pymupdf
-        from PIL import Image
+    def _recognize_image(self, image: Any) -> tuple[list[str], list[float]]:
+        engine = self._get_engine()
+        with self._recognize_lock:
+            return self._unpack_result(engine(image))
 
-        with pymupdf.open(path) as document:
-            for page in document.pages(0, min(len(document), max_pages)):
-                pixmap = page.get_pixmap(matrix=pymupdf.Matrix(2.0, 2.0), alpha=False)
-                yield Image.open(io.BytesIO(pixmap.tobytes("png"))).convert("RGB")
+    @staticmethod
+    def _has_document_header(text: str) -> bool:
+        return bool(
+            re.search(r"主\s*旨\s*[：:]", text)
+            and re.search(r"發\s*文\s*日\s*期\s*[：:]", text)
+        )
 
     @staticmethod
     def _unpack_result(result: Any) -> tuple[list[str], list[float]]:

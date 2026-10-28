@@ -82,6 +82,29 @@ QPushButton[nav="true"]:checked {
     border-radius: 10px;
 }
 
+#processingStrip {
+    background: #F0F7FA;
+    border: 1px solid #C8DDE5;
+    border-left: 4px solid #278F91;
+    border-radius: 10px;
+}
+
+#processingIcon {
+    color: #167D80;
+    font-size: 20px;
+    font-weight: 800;
+}
+
+#processingTitle {
+    color: #1D3943;
+    font-weight: 700;
+}
+
+#processingMeta {
+    color: #617780;
+    font-size: 12px;
+}
+
 #memoryStamp {
     background: #233640;
     border-radius: 8px;

@@ -12,7 +12,8 @@ from .fileops import sanitize_filename_stem
 from .models import AnalysisResult, NamingMemoryRecord
 
 DEFAULT_NAME_PATTERN = re.compile(
-    r"^(?:(?:scan|img|image|document|doc|file|untitled|掃描|未命名)[-_ ]*\d*|[\d_-]{3,})$",
+    r"^(?:(?:scan|img|image|document|doc|file|untitled|掃描|未命名)"
+    r"(?:[-_ ]*\d+)+|[\d_-]{3,})$",
     re.IGNORECASE,
 )
 PLACEHOLDER_PATTERN = re.compile(r"\{[a-z_]+\}")
@@ -33,15 +34,6 @@ def looks_like_default_filename(filename: str) -> bool:
 
 def build_filename_template(filename: str, analysis: AnalysisResult) -> str:
     template = sanitize_filename_stem(Path(filename).stem)
-    replacements = (
-        (analysis.document_number, "{document_number}"),
-        (analysis.subject, "{subject}"),
-        (analysis.organization, "{organization}"),
-    )
-    for value, placeholder in replacements:
-        if value:
-            template = template.replace(sanitize_filename_stem(value), placeholder)
-
     parsed_date = _parse_date(analysis.document_date)
     if parsed_date:
         year = str(parsed_date.year)
@@ -67,6 +59,14 @@ def build_filename_template(filename: str, analysis: AnalysisResult) -> str:
 
     if analysis.category:
         template = template.replace(analysis.category, "{category}")
+    replacements = (
+        (analysis.document_number, "{document_number}"),
+        (analysis.subject, "{subject}"),
+        (analysis.organization, "{organization}"),
+    )
+    for value, placeholder in replacements:
+        if value:
+            template = template.replace(sanitize_filename_stem(value), placeholder)
     return template
 
 
@@ -118,8 +118,6 @@ def suggest_from_memories(
     best: NamingMemorySuggestion | None = None
     for memory in memories:
         similarity = text_similarity(ocr_text, memory.ocr_text)
-        if memory.category == analysis.category:
-            similarity = min(1.0, similarity * 0.90 + 0.10)
         required = threshold
         if not PLACEHOLDER_PATTERN.search(memory.filename_template):
             required = max(0.80, threshold + 0.15)
@@ -149,7 +147,7 @@ def _parse_date(value: str | None) -> date | None:
 
 
 def _text_features(value: str) -> Counter[str]:
-    normalized = unicodedata.normalize("NFKC", value[:8000]).casefold()
+    normalized = _semantic_text(value)
     normalized = re.sub(r"\d+", "#", normalized)
     features: Counter[str] = Counter()
     for word in re.findall(r"[a-z][a-z0-9_-]{1,}", normalized):
@@ -159,3 +157,31 @@ def _text_features(value: str) -> Counter[str]:
             for index in range(max(0, len(sequence) - size + 1)):
                 features[f"c:{sequence[index : index + size]}"] += 1
     return features
+
+
+def _semantic_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value[:8000]).casefold()
+    subject = re.search(
+        r"主\s*旨\s*[：:]?\s*(.+?)(?=(?:說\s*明|辦\s*法|正\s*本|副\s*本)\s*[：:]|$)",
+        normalized,
+        re.DOTALL,
+    )
+    if subject:
+        return re.sub(r"\s+", " ", subject.group(1)).strip()
+
+    boilerplate = (
+        "受文者",
+        "發文日期",
+        "發文字號",
+        "速別",
+        "密等",
+        "附件",
+        "正本",
+        "副本",
+        "地址",
+        "電話",
+        "依規定辦理",
+    )
+    for phrase in boilerplate:
+        normalized = normalized.replace(phrase, " ")
+    return re.sub(r"\s+", " ", normalized).strip()

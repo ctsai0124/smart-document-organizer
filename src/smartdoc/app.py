@@ -10,7 +10,7 @@ from PySide6.QtCore import QLockFile, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from .config import AppConfig, ConfigStore, data_directory
+from .config import APP_VERSION, RELEASE_NAME, AppConfig, ConfigStore, data_directory
 from .database import Database
 from .ocr import RapidOcrEngine
 from .pipeline import DocumentPipeline
@@ -54,6 +54,7 @@ class ApplicationController:
             RapidOcrEngine(),
             lambda: self.config,
             self.bridge.data_changed.emit,
+            self.bridge.processing_progress.emit,
         )
         self.watcher = FolderWatcher(self.pipeline)
         self.window = MainWindow(
@@ -81,7 +82,7 @@ class ApplicationController:
 
     def _create_tray(self) -> QSystemTrayIcon:
         tray = QSystemTrayIcon(make_app_icon(), self.app)
-        tray.setToolTip("智慧文件整理 2.0")
+        tray.setToolTip(f"智慧文件整理 2.0 · v{APP_VERSION} {RELEASE_NAME}")
         menu = QMenu()
         show_action = menu.addAction("開啟待確認清單")
         show_action.triggered.connect(self.window.show_and_raise)
@@ -159,7 +160,7 @@ def main() -> int:
     args = parse_args(sys.argv[1:])
     configure_logging()
     app = QApplication(sys.argv)
-    app.setApplicationName("智慧文件整理 2.0")
+    app.setApplicationName(f"智慧文件整理 2.0 v{APP_VERSION}")
     app.setOrganizationName("LocalDesk")
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(make_app_icon())

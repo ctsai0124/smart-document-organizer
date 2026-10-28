@@ -63,6 +63,28 @@ ORG_SUFFIXES = (
     "基金會",
 )
 SUBJECT_PREFIXES = ("主旨", "案由", "會議名稱", "標題", "事由")
+HEADER_LABELS = (
+    "受文者",
+    "發文日期",
+    "發文字號",
+    "速別",
+    "密等",
+    "附件",
+    "地址",
+    "電話",
+    "承辦",
+    "檔號",
+    "保存年限",
+    "說明",
+    "辦法",
+    "正本",
+    "副本",
+)
+KNOWN_CATEGORIES = (
+    {category for category, _ in CATEGORY_RULES}
+    | {category for category, _ in TOPIC_CATEGORY_RULES}
+    | {"其他文件"}
+)
 
 
 def compact_text(value: str) -> str:
@@ -70,8 +92,21 @@ def compact_text(value: str) -> str:
 
 
 def extract_date(text: str) -> str | None:
+    labelled_lines = [
+        line
+        for line in text[:5000].splitlines()
+        if re.search(r"發\s*文\s*日\s*期\s*[：:]?", line)
+    ]
+    for line in labelled_lines:
+        parsed = _extract_date_from_text(line)
+        if parsed:
+            return parsed
+    return _extract_date_from_text(text[:5000])
+
+
+def _extract_date_from_text(text: str) -> str | None:
     for pattern in DATE_PATTERNS:
-        match = pattern.search(text[:5000])
+        match = pattern.search(text)
         if not match:
             continue
         year = int(match.group("year"))
@@ -89,6 +124,9 @@ def extract_date(text: str) -> str | None:
 def classify(text: str) -> tuple[str, float]:
     normalized = compact_text(text)
     for category, keywords in TOPIC_CATEGORY_RULES:
+        strong_match = any(keyword in normalized for keyword in keywords[:-1])
+        if not strong_match and normalized.count(keywords[-1]) < 2:
+            continue
         score = sum(
             2 if keyword in normalized[:1000] else 1
             for keyword in keywords
@@ -111,33 +149,38 @@ def classify(text: str) -> tuple[str, float]:
     return best_category, confidence
 
 
-def extract_subject(lines: list[str], category: str) -> str | None:
+def _extract_subject(lines: list[str], category: str) -> tuple[str | None, bool]:
     for index, line in enumerate(lines[:50]):
         clean = compact_text(line)
         for prefix in SUBJECT_PREFIXES:
             match = re.match(rf"^{prefix}\s*[：:]\s*(.+)$", clean)
             if match:
-                return _trim_subject(match.group(1))
+                return _trim_subject(match.group(1)), True
             if clean.rstrip("：:") == prefix and index + 1 < len(lines):
-                return _trim_subject(lines[index + 1])
+                return _trim_subject(lines[index + 1]), True
 
     if category == "會議紀錄":
         for line in lines[:20]:
             clean = compact_text(line)
             if "會議" in clean and 4 <= len(clean) <= 60:
-                return _trim_subject(clean)
+                return _trim_subject(clean), True
 
     for line in lines[:15]:
         clean = compact_text(line)
         if (
             5 <= len(clean) <= 50
             and not re.fullmatch(r"[\d\W_]+", clean)
-            and not any(
-                label in clean for label in ("日期", "地址", "電話", "頁次", "密等")
-            )
+            and not any(label in clean for label in HEADER_LABELS + ("頁次",))
+            and not clean.startswith("--- 第")
+            and not clean.endswith(("函", "公告", "開會通知單"))
+            and not clean.endswith(ORG_SUFFIXES)
         ):
-            return _trim_subject(clean)
-    return None
+            return _trim_subject(clean), False
+    return None, False
+
+
+def extract_subject(lines: list[str], category: str) -> str | None:
+    return _extract_subject(lines, category)[0]
 
 
 def extract_organization(lines: list[str]) -> str | None:
@@ -149,7 +192,12 @@ def extract_organization(lines: list[str]) -> str | None:
 
 
 def _trim_subject(value: str) -> str:
-    value = re.split(r"[。；;]", compact_text(value))[0]
+    original = compact_text(value)
+    value = re.split(r"[。；;]", original)[0]
+    value = re.sub(r"^(?:有關|檢送|檢陳|轉知)\s*", "", value)
+    value = re.sub(r"[，,]?\s*(?:敬請|請)\s*(?:查照|鑒核|惠辦|核示|辦理).*$", "", value)
+    if not value.strip():
+        value = original
     return sanitize_filename_stem(value)[:52]
 
 
@@ -167,7 +215,7 @@ class RuleBasedAnalyzer:
         category, category_confidence = classify(text)
         document_date = extract_date(text)
         organization = extract_organization(lines)
-        subject = extract_subject(lines, category)
+        subject, explicit_subject = _extract_subject(lines, category)
         document_number_match = DOC_NUMBER_PATTERN.search(text[:5000])
         document_number = (
             document_number_match.group(1) if document_number_match else None
@@ -177,7 +225,7 @@ class RuleBasedAnalyzer:
         if document_date:
             signals.append(1.0)
         if subject:
-            signals.append(0.9)
+            signals.append(0.9 if explicit_subject else 0.35)
         if organization:
             signals.append(0.8)
         if document_number:
@@ -187,11 +235,15 @@ class RuleBasedAnalyzer:
             0.05,
             min(0.99, structural_confidence * 0.55 + max(0.0, ocr_confidence) * 0.45),
         )
+        if not subject:
+            confidence = min(confidence, 0.75)
+        elif not explicit_subject:
+            confidence = min(confidence, 0.82)
 
         values = {
-            "date": document_date or "日期未辨識",
+            "date": document_date or "",
             "category": category,
-            "subject": subject or organization or "內容待確認",
+            "subject": subject or organization or "",
             "organization": organization or "",
             "document_number": document_number or "",
         }
@@ -203,9 +255,11 @@ class RuleBasedAnalyzer:
         reason_parts = [f"分類為{category}"]
         if document_date:
             reason_parts.append(f"辨識日期 {document_date}")
-        if subject:
+        if subject and explicit_subject:
             reason_parts.append("找到文件主旨")
-        if not subject:
+        elif subject:
+            reason_parts.append("依首頁內容推測主旨，請人工確認")
+        else:
             reason_parts.append("未找到明確主旨，請人工確認")
 
         return AnalysisResult(
@@ -247,7 +301,7 @@ class LocalAIAnalyzer:
             "你是本機文件分類器。只輸出 JSON，欄位為 suggested_stem、category、"
             "document_date、organization、subject、document_number、confidence、reason。"
             "suggested_stem 不含副檔名，confidence 為 0 到 1。\n\n文件 OCR：\n"
-            + text[:12_000]
+            + text[:4_000]
         )
         payload = {
             "model": self.config.local_ai_model,
@@ -259,6 +313,7 @@ class LocalAIAnalyzer:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.1,
+            "max_tokens": 350,
             "response_format": {"type": "json_object"},
         }
         request = urllib.request.Request(
@@ -269,7 +324,7 @@ class LocalAIAnalyzer:
         )
         try:
             opener = urllib.request.build_opener(NoRedirectHandler())
-            with opener.open(request, timeout=45) as response:
+            with opener.open(request, timeout=15) as response:
                 body = json.loads(response.read().decode("utf-8"))
             content = body["choices"][0]["message"]["content"]
             data: Any = json.loads(content)
@@ -294,8 +349,6 @@ class LocalAIAnalyzer:
         base = asdict(fallback)
         for key in (
             "suggested_stem",
-            "category",
-            "document_date",
             "organization",
             "subject",
             "document_number",
@@ -305,6 +358,19 @@ class LocalAIAnalyzer:
             if isinstance(value, str) and value.strip():
                 base[key] = value.strip()[:1000]
 
+        category = data.get("category")
+        if isinstance(category, str) and category.strip() in KNOWN_CATEGORIES:
+            base["category"] = category.strip()
+
+        document_date = data.get("document_date")
+        if isinstance(document_date, str):
+            try:
+                base["document_date"] = date.fromisoformat(
+                    document_date.strip()
+                ).isoformat()
+            except ValueError:
+                pass
+
         confidence = data.get("confidence")
         if confidence is not None:
             try:
@@ -312,7 +378,10 @@ class LocalAIAnalyzer:
             except (TypeError, ValueError, OverflowError):
                 parsed_confidence = None
             if parsed_confidence is not None and math.isfinite(parsed_confidence):
-                base["confidence"] = parsed_confidence
+                parsed_confidence = max(0.0, min(0.99, parsed_confidence))
+                base["confidence"] = (
+                    float(fallback.confidence) * 0.4 + parsed_confidence * 0.6
+                )
         base["suggested_stem"] = sanitize_filename_stem(str(base["suggested_stem"]))
         base["category"] = str(base["category"])[:80]
         base["reason"] = str(base["reason"])[:1000]

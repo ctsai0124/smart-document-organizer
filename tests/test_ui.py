@@ -7,6 +7,7 @@ from PySide6.QtTest import QSignalSpy
 
 from smartdoc.config import AppConfig, ConfigStore
 from smartdoc.database import Database
+from smartdoc.models import ProcessingProgress
 from smartdoc.ocr import OcrResult
 from smartdoc.pipeline import DocumentPipeline
 from smartdoc.ui import MainWindow, UiBridge
@@ -49,6 +50,19 @@ def test_main_window_builds_with_archive_settings(tmp_path: Path) -> None:
     assert window.memory_table.columnCount() == 5
     assert not window.retry_history_button.isEnabled()
     assert window.monitor_toggle_button.text() == "開始監聽"
+
+    bridge.processing_progress.emit(
+        ProcessingProgress(
+            path=tmp_path / "scan_progress.pdf",
+            stage="ocr",
+            message="OCR 文字辨識中",
+            current=3,
+        )
+    )
+    app.processEvents()
+    assert not window.processing_strip.isHidden()
+    assert window.processing_title.text() == "scan_progress.pdf"
+    assert window.processing_bar.value() == 3
 
     toggle_spy = QSignalSpy(bridge.monitoring_toggle_requested)
     window.monitor_toggle_button.click()

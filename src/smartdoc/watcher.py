@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -36,7 +37,12 @@ class ScanEventHandler(FileSystemEventHandler):
 
 
 class FolderWatcher:
-    def __init__(self, pipeline: DocumentPipeline, workers: int = 2) -> None:
+    def __init__(
+        self,
+        pipeline: DocumentPipeline,
+        workers: int = 2,
+        cooldown_seconds: float = 1.5,
+    ) -> None:
         self.pipeline = pipeline
         self.executor = ThreadPoolExecutor(
             max_workers=workers, thread_name_prefix="smartdoc"
@@ -44,6 +50,9 @@ class FolderWatcher:
         self.observer: Observer | None = None
         self.folder: Path | None = None
         self._lock = Lock()
+        self._pending: set[str] = set()
+        self._recent: dict[str, float] = {}
+        self._cooldown_seconds = cooldown_seconds
 
     @property
     def running(self) -> bool:
@@ -69,10 +78,33 @@ class FolderWatcher:
             observer.stop()
             observer.join(timeout=5)
 
-    def submit(self, path: Path) -> None:
+    def submit(self, path: Path, *, force: bool = False) -> bool:
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
-            return
-        self.executor.submit(self.pipeline.process, path)
+            return False
+        key = str(path.expanduser().resolve()).casefold()
+        now = time.monotonic()
+        with self._lock:
+            self._recent = {
+                recent_key: completed_at
+                for recent_key, completed_at in self._recent.items()
+                if now - completed_at < self._cooldown_seconds
+            }
+            if key in self._pending or (not force and key in self._recent):
+                return False
+            self._pending.add(key)
+        self.executor.submit(self._run_pipeline, path, key, force)
+        return True
+
+    def _run_pipeline(self, path: Path, key: str, force: bool) -> None:
+        try:
+            if force:
+                self.pipeline.process(path, force=True)
+            else:
+                self.pipeline.process(path)
+        finally:
+            with self._lock:
+                self._pending.discard(key)
+                self._recent[key] = time.monotonic()
 
     def scan_existing(self, folder: Path) -> int:
         folder = folder.expanduser().resolve()
@@ -81,9 +113,7 @@ class FolderWatcher:
             for path in folder.iterdir()
             if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
         ]
-        for path in candidates:
-            self.submit(path)
-        return len(candidates)
+        return sum(1 for path in candidates if self.submit(path))
 
     def close(self) -> None:
         self.stop()

@@ -22,7 +22,13 @@ from .learning import (
     looks_like_default_filename,
     suggest_from_memories,
 )
-from .models import DocumentRecord, DocumentStatus, NamingMemoryRecord
+from .models import (
+    AnalysisResult,
+    DocumentRecord,
+    DocumentStatus,
+    NamingMemoryRecord,
+    ProcessingProgress,
+)
 from .ocr import OcrEngine
 
 LOGGER = logging.getLogger(__name__)
@@ -35,34 +41,47 @@ class DocumentPipeline:
         ocr_engine: OcrEngine,
         get_config: Callable[[], AppConfig],
         on_change: Callable[[], None] | None = None,
+        on_progress: Callable[[ProcessingProgress], None] | None = None,
     ) -> None:
         self.database = database
         self.ocr_engine = ocr_engine
         self.get_config = get_config
         self.on_change = on_change or (lambda: None)
+        self.on_progress = on_progress or (lambda progress: None)
         self.rule_analyzer = RuleBasedAnalyzer()
         self._processing: set[str] = set()
         self._lock = threading.Lock()
 
-    def process(self, path: Path, *, wait_for_file: bool = True) -> int | None:
+    def process(
+        self, path: Path, *, wait_for_file: bool = True, force: bool = False
+    ) -> int | None:
         path = path.resolve()
+        self._progress(path, "waiting", "等待掃描檔寫入完成", 1)
         key = str(path).casefold()
         with self._lock:
             if key in self._processing:
+                self._progress(
+                    path, "skipped", "相同檔案正在處理，已略過重複事件", 6, done=True
+                )
                 return None
             self._processing.add(key)
         document_id: int | None = None
         try:
             if not is_supported(path):
+                self._progress(path, "skipped", "不是支援的文件格式", 6, done=True)
                 return None
             config = self.get_config()
             if wait_for_file and not wait_until_stable(
                 path, settle_seconds=config.settle_seconds
             ):
                 raise TimeoutError("掃描檔在等待時間內仍持續寫入")
+            self._progress(path, "hashing", "確認檔案內容與重複紀錄", 2)
             fingerprint = source_fingerprint(path)
             existing = self.database.get_document_by_fingerprint(fingerprint)
-            if existing and existing.status is not DocumentStatus.FAILED:
+            if existing and existing.status is not DocumentStatus.FAILED and not force:
+                self._progress(
+                    path, "skipped", "內容已處理過，已安全略過", 6, done=True
+                )
                 return None
 
             if existing is None:
@@ -84,24 +103,46 @@ class DocumentPipeline:
                     if same_content:
                         self.database.update_fingerprint(legacy.id, fingerprint)
                         if legacy.status is not DocumentStatus.FAILED:
+                            self._progress(
+                                path,
+                                "skipped",
+                                "內容已處理過，已安全略過",
+                                6,
+                                done=True,
+                            )
                             return None
 
-            document_id, claimed = self.database.claim_processing(path, fingerprint)
+            document_id, claimed = self.database.claim_processing(
+                path, fingerprint, force=force
+            )
             if not claimed:
+                self._progress(
+                    path, "skipped", "內容已在紀錄中，已安全略過", 6, done=True
+                )
                 return None
             self.on_change()
 
+            self._progress(path, "ocr", "OCR 文字辨識中", 3)
             ocr = self.ocr_engine.recognize(path, max_pdf_pages=config.max_pdf_pages)
             if not ocr.text.strip():
                 raise ValueError("OCR 未辨識出文字，請確認掃描品質或文件語言")
+            self._progress(path, "analyzing", "分析日期、主旨與文件分類", 4)
             analysis = self.rule_analyzer.analyze(
                 ocr.text,
                 ocr_confidence=ocr.confidence,
                 template=config.filename_template,
             )
+            if config.local_ai_enabled:
+                self._progress(
+                    path,
+                    "local_ai",
+                    "等待本機 AI 回應（最長 15 秒）",
+                    4,
+                )
             analysis = LocalAIAnalyzer(config).analyze(ocr.text, analysis)
             memory_suggestion = None
             if config.naming_memory_enabled:
+                self._progress(path, "memory", "比對已確認的命名記憶", 5)
                 memories = self.database.list_naming_memories(
                     category=analysis.category, limit=200
                 )
@@ -122,6 +163,7 @@ class DocumentPipeline:
                         ),
                     )
             suggested_name = f"{analysis.suggested_stem}{path.suffix.lower()}"
+            self._progress(path, "saving", "儲存分析結果與安全檢查", 6)
             self.database.complete_analysis(
                 document_id,
                 suggested_name=suggested_name,
@@ -129,6 +171,10 @@ class DocumentPipeline:
                 category=analysis.category,
                 ocr_text=ocr.text,
                 summary=analysis.reason,
+                document_date=analysis.document_date,
+                organization=analysis.organization,
+                subject=analysis.subject,
+                document_number=analysis.document_number,
             )
             auto_rename = (
                 config.auto_rename_enabled
@@ -150,12 +196,16 @@ class DocumentPipeline:
                     archive=auto_archive,
                 )
             self.on_change()
+            self._progress(path, "complete", "辨識完成，等待你確認", 6, done=True)
             return document_id
         except Exception as error:
             LOGGER.exception("Document processing failed: %s", path)
             if document_id is not None:
                 self.database.mark_failed(document_id, str(error))
                 self.on_change()
+            self._progress(
+                path, "failed", f"處理失敗：{error}", 6, done=True, failed=True
+            )
             return document_id
         finally:
             with self._lock:
@@ -219,11 +269,30 @@ class DocumentPipeline:
         if not document.ocr_text.strip():
             raise ValueError("這份文件沒有可供學習的 OCR 文字")
         config = self.get_config()
-        analysis = self.rule_analyzer.analyze(
-            document.ocr_text,
-            ocr_confidence=document.confidence,
-            template=config.filename_template,
-        )
+        if any(
+            (
+                document.document_date,
+                document.organization,
+                document.subject,
+                document.document_number,
+            )
+        ):
+            analysis = AnalysisResult(
+                suggested_stem=Path(document.suggested_name).stem,
+                category=document.category,
+                document_date=document.document_date,
+                organization=document.organization,
+                subject=document.subject,
+                document_number=document.document_number,
+                confidence=document.confidence,
+                reason=document.summary,
+            )
+        else:
+            analysis = self.rule_analyzer.analyze(
+                document.ocr_text,
+                ocr_confidence=document.confidence,
+                template=config.filename_template,
+            )
         analysis = replace(analysis, category=document.category)
         filename_template = build_filename_template(chosen_name, analysis)
         memory = self.database.save_naming_memory(
@@ -273,3 +342,24 @@ class DocumentPipeline:
         if document is None:
             raise KeyError(f"找不到文件紀錄：{document_id}")
         return document
+
+    def _progress(
+        self,
+        path: Path,
+        stage: str,
+        message: str,
+        current: int,
+        *,
+        done: bool = False,
+        failed: bool = False,
+    ) -> None:
+        self.on_progress(
+            ProcessingProgress(
+                path=path,
+                stage=stage,
+                message=message,
+                current=current,
+                done=done,
+                failed=failed,
+            )
+        )

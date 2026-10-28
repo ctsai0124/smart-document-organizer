@@ -24,7 +24,6 @@ class Database:
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
         try:
             yield connection
             connection.commit()
@@ -36,6 +35,7 @@ class Database:
 
     def initialize(self) -> None:
         with self.connect() as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS documents (
@@ -49,6 +49,10 @@ class Database:
                     category TEXT NOT NULL DEFAULT '其他文件',
                     ocr_text TEXT NOT NULL DEFAULT '',
                     summary TEXT NOT NULL DEFAULT '',
+                    document_date TEXT,
+                    organization TEXT,
+                    subject TEXT,
+                    document_number TEXT,
                     error TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -81,6 +85,17 @@ class Database:
                 ON naming_memories(category, updated_at DESC);
                 """
             )
+            self._ensure_document_columns(connection)
+
+    @staticmethod
+    def _ensure_document_columns(connection: sqlite3.Connection) -> None:
+        existing = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(documents)").fetchall()
+        }
+        for name in ("document_date", "organization", "subject", "document_number"):
+            if name not in existing:
+                connection.execute(f"ALTER TABLE documents ADD COLUMN {name} TEXT")
 
     def has_fingerprint(self, fingerprint: str) -> bool:
         with self.connect() as connection:
@@ -104,7 +119,9 @@ class Database:
             )
         return cursor.rowcount > 0
 
-    def claim_processing(self, path: Path, fingerprint: str) -> tuple[int, bool]:
+    def claim_processing(
+        self, path: Path, fingerprint: str, *, force: bool = False
+    ) -> tuple[int, bool]:
         """Atomically create a document or reclaim a previously failed one."""
         now = utc_now()
         with self.connect() as connection:
@@ -134,7 +151,7 @@ class Database:
                 if row is None:
                     raise
                 document_id = int(row["id"])
-                if row["status"] != DocumentStatus.FAILED.value:
+                if row["status"] != DocumentStatus.FAILED.value and not force:
                     return document_id, False
                 connection.execute(
                     """
@@ -200,13 +217,18 @@ class Database:
         category: str,
         ocr_text: str,
         summary: str,
+        document_date: str | None = None,
+        organization: str | None = None,
+        subject: str | None = None,
+        document_number: str | None = None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
                 """
                 UPDATE documents
                 SET suggested_name = ?, confidence = ?, category = ?, ocr_text = ?,
-                    summary = ?, status = ?, error = NULL, updated_at = ?
+                    summary = ?, document_date = ?, organization = ?, subject = ?,
+                    document_number = ?, status = ?, error = NULL, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -215,6 +237,10 @@ class Database:
                     category,
                     ocr_text,
                     summary,
+                    document_date,
+                    organization,
+                    subject,
+                    document_number,
                     DocumentStatus.PENDING.value,
                     utc_now(),
                     document_id,
@@ -320,9 +346,19 @@ class Database:
         return self._document_from_row(row) if row else None
 
     def list_documents(
-        self, status: DocumentStatus | None = None, limit: int = 500
+        self,
+        status: DocumentStatus | None = None,
+        limit: int = 500,
+        *,
+        include_ocr_text: bool = True,
     ) -> list[DocumentRecord]:
-        query = "SELECT * FROM documents"
+        ocr_column = "ocr_text" if include_ocr_text else "'' AS ocr_text"
+        query = f"""
+            SELECT id, original_path, current_path, suggested_name, status,
+                   confidence, category, {ocr_column}, summary, document_date,
+                   organization, subject, document_number, error, created_at, updated_at
+            FROM documents
+        """
         params: tuple[object, ...]
         if status is not None:
             query += " WHERE status = ?"
@@ -412,10 +448,15 @@ class Database:
         return self._naming_memory_from_row(row)
 
     def list_naming_memories(
-        self, category: str | None = None, limit: int = 500
+        self,
+        category: str | None = None,
+        limit: int = 500,
+        *,
+        include_ocr_text: bool = True,
     ) -> list[NamingMemoryRecord]:
-        query = """
-            SELECT m.*, d.ocr_text
+        ocr_column = "d.ocr_text" if include_ocr_text else "'' AS ocr_text"
+        query = f"""
+            SELECT m.*, {ocr_column}
             FROM naming_memories AS m
             JOIN documents AS d ON d.id = m.document_id
         """
@@ -456,6 +497,10 @@ class Database:
             category=row["category"],
             ocr_text=row["ocr_text"],
             summary=row["summary"],
+            document_date=row["document_date"],
+            organization=row["organization"],
+            subject=row["subject"],
+            document_number=row["document_number"],
             error=row["error"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),

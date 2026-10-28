@@ -37,6 +37,10 @@ class DocumentRecord:
     category: str
     ocr_text: str
     summary: str
+    document_date: str | None
+    organization: str | None
+    subject: str | None
+    document_number: str | None
     error: str | None
     created_at: datetime
     updated_at: datetime
@@ -63,3 +67,14 @@ class NamingMemoryRecord:
     ocr_text: str
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessingProgress:
+    path: Path
+    stage: str
+    message: str
+    current: int
+    total: int = 6
+    done: bool = False
+    failed: bool = False

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -33,10 +34,18 @@ from PySide6.QtWidgets import (
 )
 
 from .analyzer import is_localhost_url
-from .config import AppConfig, ConfigStore, StartupManager, packaged_startup_command
+from .config import (
+    APP_VERSION,
+    RELEASE_DATE,
+    RELEASE_NAME,
+    AppConfig,
+    ConfigStore,
+    StartupManager,
+    packaged_startup_command,
+)
 from .database import Database
 from .fileops import SUPPORTED_EXTENSIONS
-from .models import DocumentRecord, DocumentStatus
+from .models import DocumentRecord, DocumentStatus, ProcessingProgress
 from .pipeline import DocumentPipeline
 from .watcher import FolderWatcher
 
@@ -53,6 +62,7 @@ STATUS_LABELS = {
 
 class UiBridge(QObject):
     data_changed = Signal()
+    processing_progress = Signal(object)
     monitoring_changed = Signal(bool)
     monitoring_toggle_requested = Signal()
 
@@ -96,12 +106,26 @@ class MainWindow(QMainWindow):
         self.current_records: dict[int, DocumentRecord] = {}
         self.history_records: dict[int, DocumentRecord] = {}
         self._queue_refresh_scheduled = False
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(120)
+        self._refresh_timer.timeout.connect(self._refresh_visible)
+        self._active_progress: dict[str, ProcessingProgress] = {}
+        self._progress_started: dict[str, float] = {}
+        self._latest_progress_key: str | None = None
+        self._spinner_index = 0
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(500)
+        self._progress_timer.timeout.connect(self._render_active_progress)
 
-        self.setWindowTitle("智慧文件整理 2.0")
+        self.setWindowTitle(
+            f"智慧文件整理 2.0 · v{APP_VERSION} {RELEASE_NAME} · {RELEASE_DATE}"
+        )
         self.setMinimumSize(1060, 680)
         self.resize(1280, 780)
         self._build_ui()
-        self.bridge.data_changed.connect(self.refresh_all)
+        self.bridge.data_changed.connect(self.schedule_refresh)
+        self.bridge.processing_progress.connect(self.update_processing_progress)
         self.bridge.monitoring_changed.connect(self.refresh_monitor_status)
         self.refresh_all()
 
@@ -138,7 +162,9 @@ class MainWindow(QMainWindow):
         brand_copy = QVBoxLayout()
         brand_copy.setSpacing(0)
         brand_copy.addWidget(label("智慧文件整理", "brandTitle"))
-        brand_copy.addWidget(label("LOCAL DESK 2.0", "brandCaption"))
+        version = label(f"v{APP_VERSION} · {RELEASE_DATE}", "brandCaption")
+        version.setToolTip(RELEASE_NAME)
+        brand_copy.addWidget(version)
         brand_row.addLayout(brand_copy)
         layout.addLayout(brand_row)
         layout.addSpacing(24)
@@ -237,6 +263,31 @@ class MainWindow(QMainWindow):
         status_layout.addLayout(count_copy)
         outer.addWidget(status)
         self.status_strip = status
+
+        processing = QFrame()
+        processing.setObjectName("processingStrip")
+        processing_layout = QHBoxLayout(processing)
+        processing_layout.setContentsMargins(16, 10, 16, 10)
+        self.processing_icon = label("◐", "processingIcon")
+        self.processing_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.processing_icon.setFixedWidth(24)
+        processing_layout.addWidget(self.processing_icon)
+        processing_copy = QVBoxLayout()
+        processing_copy.setSpacing(2)
+        self.processing_title = label("準備處理文件", "processingTitle")
+        self.processing_meta = label("", "processingMeta")
+        processing_copy.addWidget(self.processing_title)
+        processing_copy.addWidget(self.processing_meta)
+        processing_layout.addLayout(processing_copy, 1)
+        self.processing_bar = QProgressBar()
+        self.processing_bar.setRange(0, 6)
+        self.processing_bar.setValue(0)
+        self.processing_bar.setTextVisible(False)
+        self.processing_bar.setFixedWidth(180)
+        processing_layout.addWidget(self.processing_bar)
+        processing.hide()
+        self.processing_strip = processing
+        outer.addWidget(processing)
 
         action_row = QHBoxLayout()
         self.apply_button = button("套用勾選的檔名", primary=True)
@@ -341,7 +392,7 @@ class MainWindow(QMainWindow):
         self.undo_button.clicked.connect(self._undo_selected)
         self.learn_history_button = button("用目前檔名建立記憶")
         self.learn_history_button.clicked.connect(self._learn_from_history)
-        self.retry_history_button = button("重新處理失敗文件")
+        self.retry_history_button = button("重新辨識選取文件")
         self.retry_history_button.clicked.connect(self._retry_from_history)
         action_row.addWidget(self.undo_button)
         action_row.addWidget(self.learn_history_button)
@@ -489,7 +540,7 @@ class MainWindow(QMainWindow):
         self.naming_memory_threshold_input.setDecimals(2)
         memory_form.addRow("相似度門檻", self.naming_memory_threshold_input)
         threshold_hint = label(
-            "門檻越高越保守；建議先維持 0.58，由安心模式確認幾次再調整。",
+            "門檻越高越保守；建議先維持 0.68，由安心模式確認幾次再調整。",
             "mutedText",
         )
         threshold_hint.setWordWrap(True)
@@ -676,10 +727,81 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "無法儲存設定", str(error))
 
     def refresh_all(self) -> None:
+        self._refresh_timer.stop()
         self.refresh_queue()
         self.refresh_history()
         self.refresh_memory()
         self.refresh_monitor_status(self.watcher.running)
+
+    def schedule_refresh(self) -> None:
+        self._refresh_timer.start()
+
+    def _refresh_visible(self) -> None:
+        self.refresh_queue()
+        current_page = self.pages.currentIndex()
+        if current_page == 1:
+            self.refresh_history()
+        elif current_page == 2:
+            self.refresh_memory()
+
+    def update_processing_progress(self, progress: object) -> None:
+        if not isinstance(progress, ProcessingProgress):
+            return
+        key = str(progress.path).casefold()
+        now = time.monotonic()
+        if progress.done:
+            started = self._progress_started.pop(key, now)
+            self._active_progress.pop(key, None)
+            self.processing_strip.show()
+            self.processing_icon.setText("!" if progress.failed else "✓")
+            self.processing_title.setText(progress.path.name)
+            self.processing_meta.setText(
+                f"{progress.message}｜耗時 {max(0, round(now - started))} 秒"
+            )
+            self.processing_bar.setRange(0, progress.total)
+            self.processing_bar.setValue(progress.current)
+            if self._active_progress:
+                self._latest_progress_key = next(reversed(self._active_progress))
+                self._render_active_progress()
+            else:
+                self._progress_timer.stop()
+                self._latest_progress_key = None
+                QTimer.singleShot(3500, self._hide_completed_progress)
+            return
+
+        self._active_progress[key] = progress
+        self._progress_started.setdefault(key, now)
+        self._latest_progress_key = key
+        self.processing_strip.show()
+        if not self._progress_timer.isActive():
+            self._progress_timer.start()
+        self._render_active_progress()
+
+    def _render_active_progress(self) -> None:
+        key = self._latest_progress_key
+        if not key or key not in self._active_progress:
+            return
+        progress = self._active_progress[key]
+        elapsed = max(0, round(time.monotonic() - self._progress_started[key]))
+        spinner = ("◐", "◓", "◑", "◒")[self._spinner_index % 4]
+        self._spinner_index += 1
+        active_note = (
+            f"｜同時處理 {len(self._active_progress)} 份"
+            if len(self._active_progress) > 1
+            else ""
+        )
+        long_note = "｜處理時間較長，但程式仍在運作" if elapsed >= 30 else ""
+        self.processing_icon.setText(spinner)
+        self.processing_title.setText(progress.path.name)
+        self.processing_meta.setText(
+            f"{progress.message}｜已經過 {elapsed} 秒{active_note}{long_note}"
+        )
+        self.processing_bar.setRange(0, progress.total)
+        self.processing_bar.setValue(progress.current)
+
+    def _hide_completed_progress(self) -> None:
+        if not self._active_progress:
+            self.processing_strip.hide()
 
     def refresh_monitor_status(self, active: bool) -> None:
         config = self.get_config()
@@ -733,7 +855,9 @@ class MainWindow(QMainWindow):
             if row == self.queue_table.currentRow():
                 selected_id = document_id
 
-        records = self.database.list_documents(DocumentStatus.PENDING)
+        records = self.database.list_documents(
+            DocumentStatus.PENDING, include_ocr_text=False
+        )
         config = self.get_config()
         self.apply_button.setText(
             "套用檔名與歸檔" if config.archive_on_apply else "套用勾選的檔名"
@@ -784,7 +908,7 @@ class MainWindow(QMainWindow):
             self.open_file_button.setEnabled(False)
 
     def refresh_history(self) -> None:
-        records = self.database.list_documents(limit=500)
+        records = self.database.list_documents(limit=500, include_ocr_text=False)
         self.history_records = {record.id: record for record in records}
         self.history_table.setRowCount(0)
         for row, record in enumerate(records):
@@ -815,7 +939,11 @@ class MainWindow(QMainWindow):
         item = self.history_table.item(row, 0)
         if not item:
             return None
-        return self.history_records.get(int(item.data(Qt.ItemDataRole.UserRole)))
+        document_id = int(item.data(Qt.ItemDataRole.UserRole))
+        record = self.database.get_document(document_id)
+        if record is not None:
+            self.history_records[document_id] = record
+        return record
 
     def _update_history_actions(self) -> None:
         record = self._selected_history_record()
@@ -829,11 +957,15 @@ class MainWindow(QMainWindow):
             bool(record and record.ocr_text.strip() and record.current_path.exists())
         )
         self.retry_history_button.setEnabled(
-            bool(record and record.status == DocumentStatus.FAILED)
+            bool(
+                record
+                and record.status is not DocumentStatus.PROCESSING
+                and (record.current_path.exists() or record.original_path.exists())
+            )
         )
 
     def refresh_memory(self) -> None:
-        memories = self.database.list_naming_memories(limit=500)
+        memories = self.database.list_naming_memories(limit=500, include_ocr_text=False)
         self.memory_table.setRowCount(0)
         for row, memory in enumerate(memories):
             self.memory_table.insertRow(row)
@@ -966,9 +1098,11 @@ class MainWindow(QMainWindow):
         item = self.queue_table.item(row, 0)
         if not item:
             return
-        record = self.current_records.get(int(item.data(Qt.ItemDataRole.UserRole)))
+        document_id = int(item.data(Qt.ItemDataRole.UserRole))
+        record = self.database.get_document(document_id)
         if not record:
             return
+        self.current_records[document_id] = record
         self.detail_name.setText(record.current_path.name)
         detail = f"{record.summary}｜整體信心 {record.confidence:.0%}"
         destination = self.get_config().archive_destination(record.category)
@@ -1008,7 +1142,7 @@ class MainWindow(QMainWindow):
 
     def _retry_from_history(self) -> None:
         record = self._selected_history_record()
-        if record is None or record.status != DocumentStatus.FAILED:
+        if record is None or record.status is DocumentStatus.PROCESSING:
             return
         source = (
             record.current_path
@@ -1018,7 +1152,14 @@ class MainWindow(QMainWindow):
         if not source.exists():
             QMessageBox.warning(self, "無法重新處理", f"找不到檔案：{source}")
             return
-        self.watcher.submit(source)
+        submitted = self.watcher.submit(source, force=True)
+        if not submitted:
+            QMessageBox.information(
+                self,
+                "文件正在處理",
+                f"「{source.name}」已在辨識佇列中。",
+            )
+            return
         QMessageBox.information(
             self,
             "已重新加入佇列",

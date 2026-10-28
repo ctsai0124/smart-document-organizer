@@ -28,6 +28,7 @@ def test_default_scanner_names_are_not_learning_examples() -> None:
     assert looks_like_default_filename("scan_001.pdf")
     assert looks_like_default_filename("IMG-401617.jpg")
     assert looks_like_default_filename("20260818_001.pdf")
+    assert looks_like_default_filename("SCAN_20251028_0001.pdf")
     assert not looks_like_default_filename("115年度教師成績考核名冊.pdf")
 
 
@@ -67,3 +68,10 @@ def test_similar_memory_proposes_adapted_name() -> None:
     assert suggestion is not None
     assert suggestion.suggested_stem == "116年度教師成績考核名冊"
     assert suggestion.memory_id == 7
+
+
+def test_boilerplate_does_not_make_different_subjects_look_similar() -> None:
+    first = "受文者：某學校 發文日期：115年1月2日 主旨：辦理教師研習 說明：依規定辦理"
+    second = "受文者：某學校 發文日期：115年9月8日 主旨：辦理差勤抽查 說明：依規定辦理"
+
+    assert text_similarity(first, second) < 0.58

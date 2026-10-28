@@ -9,6 +9,9 @@ from pathlib import Path
 from platformdirs import user_config_dir, user_data_dir
 
 APP_NAME = "SmartDocumentOrganizer"
+APP_VERSION = "0.4.0"
+RELEASE_NAME = "看得見進度版"
+RELEASE_DATE = "2026-10-28"
 
 
 def default_scan_folder() -> str:
@@ -28,13 +31,13 @@ class AppConfig:
     local_ai_model: str = "qwen2.5:7b"
     start_with_windows: bool = False
     settle_seconds: float = 2.0
-    max_pdf_pages: int = 12
+    max_pdf_pages: int = 6
     archive_on_apply: bool = False
     auto_archive_enabled: bool = False
     auto_archive_threshold: float = 0.92
     archive_rules: dict[str, str] = field(default_factory=lambda: {"考核": "考核"})
     naming_memory_enabled: bool = True
-    naming_memory_threshold: float = 0.58
+    naming_memory_threshold: float = 0.68
 
     def __post_init__(self) -> None:
         if not self.scan_folder:

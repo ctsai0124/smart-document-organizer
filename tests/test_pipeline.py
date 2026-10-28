@@ -292,3 +292,27 @@ def test_identical_content_with_different_mtime_is_processed_once(
     assert pipeline.process(first, wait_for_file=False) is not None
     assert pipeline.process(second, wait_for_file=False) is None
     assert len(database.list_documents()) == 1
+
+
+def test_progress_reports_real_stages_and_force_reanalyzes(tmp_path: Path) -> None:
+    source = tmp_path / "scan_progress.pdf"
+    source.write_bytes(b"progress")
+    database = Database(tmp_path / "documents.sqlite3")
+    updates = []
+    pipeline = DocumentPipeline(
+        database,
+        FakeOcr(),
+        lambda: AppConfig(scan_folder=str(tmp_path)),
+        on_progress=updates.append,
+    )
+
+    first_id = pipeline.process(source, wait_for_file=False)
+    second_id = pipeline.process(source, wait_for_file=False, force=True)
+
+    assert second_id == first_id
+    stages = [update.stage for update in updates]
+    assert "ocr" in stages
+    assert "analyzing" in stages
+    assert "saving" in stages
+    assert stages[-1] == "complete"
+    assert updates[-1].done

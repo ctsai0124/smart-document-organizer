@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 from smartdoc.database import Database
@@ -103,3 +104,68 @@ def test_record_move_updates_history_and_path_together(tmp_path: Path) -> None:
     assert document.status == DocumentStatus.APPLIED
     assert rename is not None
     assert rename.id == rename_id
+
+
+def test_structured_analysis_is_persisted_and_list_can_skip_ocr(tmp_path: Path) -> None:
+    database = Database(tmp_path / "documents.sqlite3")
+    source = tmp_path / "scan.pdf"
+    document_id = database.create_processing(source, "sha256:structured")
+    database.complete_analysis(
+        document_id,
+        suggested_name="2026-10-28_函文_測試.pdf",
+        confidence=0.95,
+        category="函文",
+        ocr_text="很長的 OCR 文字",
+        summary="找到文件主旨",
+        document_date="2026-10-28",
+        organization="高雄市政府教育局",
+        subject="測試",
+        document_number="高市教字第1號",
+    )
+
+    full = database.get_document(document_id)
+    summary = database.list_documents(include_ocr_text=False)[0]
+
+    assert full is not None
+    assert full.subject == "測試"
+    assert full.document_number == "高市教字第1號"
+    assert summary.ocr_text == ""
+
+
+def test_existing_database_is_migrated_with_structured_columns(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_path TEXT NOT NULL,
+                current_path TEXT NOT NULL,
+                source_fingerprint TEXT NOT NULL UNIQUE,
+                suggested_name TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0,
+                category TEXT NOT NULL DEFAULT '其他文件',
+                ocr_text TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT '',
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    database = Database(path)
+    source = tmp_path / "legacy.pdf"
+    document_id = database.create_processing(source, "sha256:legacy-schema")
+    database.complete_analysis(
+        document_id,
+        suggested_name="測試.pdf",
+        confidence=0.9,
+        category="函文",
+        ocr_text="主旨：測試",
+        summary="測試",
+        subject="測試",
+    )
+
+    assert database.get_document(document_id).subject == "測試"
