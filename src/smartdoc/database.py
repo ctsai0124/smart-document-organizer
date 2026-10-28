@@ -6,7 +6,14 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .models import DocumentRecord, DocumentStatus, NamingMemoryRecord, RenameRecord
+from .models import (
+    AnalysisCorrectionRecord,
+    DocumentRecord,
+    DocumentStatus,
+    FieldAliasRecord,
+    NamingMemoryRecord,
+    RenameRecord,
+)
 
 
 def utc_now() -> str:
@@ -83,6 +90,32 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_naming_memories_category
                 ON naming_memories(category, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS analysis_corrections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    document_id INTEGER NOT NULL UNIQUE REFERENCES documents(id),
+                    source_name TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    document_date TEXT,
+                    organization TEXT,
+                    subject TEXT,
+                    document_number TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_analysis_corrections_updated
+                ON analysis_corrections(updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS analysis_field_aliases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    correction_id INTEGER NOT NULL
+                        REFERENCES analysis_corrections(id) ON DELETE CASCADE,
+                    field_name TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(correction_id, field_name, label)
+                );
                 """
             )
             self._ensure_document_columns(connection)
@@ -485,6 +518,182 @@ class Database:
             ).fetchone()
         return int(row["total"]) if row else 0
 
+    def save_analysis_correction(
+        self,
+        document_id: int,
+        *,
+        source_name: str,
+        category: str,
+        document_date: str | None,
+        organization: str | None,
+        subject: str | None,
+        document_number: str | None,
+        aliases: list[tuple[str, str]],
+        suggested_name: str | None = None,
+        confidence: float | None = None,
+        summary: str | None = None,
+    ) -> AnalysisCorrectionRecord:
+        now = utc_now()
+        with self.connect() as connection:
+            if suggested_name is not None:
+                if confidence is None or summary is None:
+                    raise ValueError("更新文件分析時必須提供信心與摘要")
+                connection.execute(
+                    """
+                    UPDATE documents
+                    SET suggested_name = ?, confidence = ?, category = ?, summary = ?,
+                        document_date = ?, organization = ?, subject = ?,
+                        document_number = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        suggested_name,
+                        confidence,
+                        category,
+                        summary,
+                        document_date,
+                        organization,
+                        subject,
+                        document_number,
+                        now,
+                        document_id,
+                    ),
+                )
+            connection.execute(
+                """
+                INSERT INTO analysis_corrections (
+                    document_id, source_name, category, document_date,
+                    organization, subject, document_number, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(document_id) DO UPDATE SET
+                    source_name = excluded.source_name,
+                    category = excluded.category,
+                    document_date = excluded.document_date,
+                    organization = excluded.organization,
+                    subject = excluded.subject,
+                    document_number = excluded.document_number,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    document_id,
+                    source_name,
+                    category,
+                    document_date,
+                    organization,
+                    subject,
+                    document_number,
+                    now,
+                    now,
+                ),
+            )
+            correction_row = connection.execute(
+                "SELECT * FROM analysis_corrections WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+            if correction_row is None:
+                raise RuntimeError("無法儲存分析校正")
+            correction_id = int(correction_row["id"])
+            connection.execute(
+                "DELETE FROM analysis_field_aliases WHERE correction_id = ?",
+                (correction_id,),
+            )
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO analysis_field_aliases (
+                    correction_id, field_name, label, created_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (correction_id, field_name, label, now)
+                    for field_name, label in aliases
+                ],
+            )
+        correction = self.get_analysis_correction(correction_id)
+        if correction is None:
+            raise RuntimeError("無法讀回分析校正")
+        return correction
+
+    def get_analysis_correction(
+        self, correction_id: int
+    ) -> AnalysisCorrectionRecord | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT c.*, d.ocr_text
+                FROM analysis_corrections AS c
+                JOIN documents AS d ON d.id = c.document_id
+                WHERE c.id = ?
+                """,
+                (correction_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            alias_rows = connection.execute(
+                """
+                SELECT * FROM analysis_field_aliases
+                WHERE correction_id = ? ORDER BY field_name, label
+                """,
+                (correction_id,),
+            ).fetchall()
+        return self._analysis_correction_from_row(row, alias_rows)
+
+    def list_analysis_corrections(
+        self, limit: int = 500, *, include_ocr_text: bool = True
+    ) -> list[AnalysisCorrectionRecord]:
+        ocr_column = "d.ocr_text" if include_ocr_text else "'' AS ocr_text"
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT c.*, {ocr_column}
+                FROM analysis_corrections AS c
+                JOIN documents AS d ON d.id = c.document_id
+                ORDER BY c.updated_at DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            correction_ids = [int(row["id"]) for row in rows]
+            aliases_by_correction: dict[int, list[sqlite3.Row]] = {
+                correction_id: [] for correction_id in correction_ids
+            }
+            if correction_ids:
+                placeholders = ",".join("?" for _ in correction_ids)
+                alias_rows = connection.execute(
+                    f"""
+                    SELECT * FROM analysis_field_aliases
+                    WHERE correction_id IN ({placeholders})
+                    ORDER BY field_name, label
+                    """,
+                    correction_ids,
+                ).fetchall()
+                for alias_row in alias_rows:
+                    aliases_by_correction[int(alias_row["correction_id"])].append(
+                        alias_row
+                    )
+        return [
+            self._analysis_correction_from_row(
+                row, aliases_by_correction[int(row["id"])]
+            )
+            for row in rows
+        ]
+
+    def list_field_aliases(self, limit: int = 1000) -> list[FieldAliasRecord]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM analysis_field_aliases
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._field_alias_from_row(row) for row in rows]
+
+    def delete_analysis_correction(self, correction_id: int) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM analysis_corrections WHERE id = ?", (correction_id,)
+            )
+        return cursor.rowcount > 0
+
     @staticmethod
     def _document_from_row(row: sqlite3.Row) -> DocumentRecord:
         return DocumentRecord(
@@ -518,4 +727,33 @@ class Database:
             ocr_text=row["ocr_text"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    @classmethod
+    def _analysis_correction_from_row(
+        cls, row: sqlite3.Row, alias_rows: list[sqlite3.Row]
+    ) -> AnalysisCorrectionRecord:
+        return AnalysisCorrectionRecord(
+            id=row["id"],
+            document_id=row["document_id"],
+            source_name=row["source_name"],
+            category=row["category"],
+            document_date=row["document_date"],
+            organization=row["organization"],
+            subject=row["subject"],
+            document_number=row["document_number"],
+            ocr_text=row["ocr_text"],
+            aliases=tuple(cls._field_alias_from_row(item) for item in alias_rows),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _field_alias_from_row(row: sqlite3.Row) -> FieldAliasRecord:
+        return FieldAliasRecord(
+            id=row["id"],
+            correction_id=row["correction_id"],
+            field_name=row["field_name"],
+            label=row["label"],
+            created_at=datetime.fromisoformat(row["created_at"]),
         )

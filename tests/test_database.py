@@ -59,6 +59,42 @@ def test_naming_memory_can_be_saved_listed_and_deleted(tmp_path: Path) -> None:
     assert database.naming_memory_count() == 0
 
 
+def test_analysis_correction_and_aliases_can_be_saved_and_deleted(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "documents.sqlite3")
+    source = tmp_path / "scan_001.pdf"
+    document_id = database.create_processing(source, "correction-fingerprint")
+    database.complete_analysis(
+        document_id,
+        suggested_name="其他文件.pdf",
+        confidence=0.6,
+        category="其他文件",
+        ocr_text="案件名稱：115年度代理教師甄選結果",
+        summary="待確認",
+    )
+
+    correction = database.save_analysis_correction(
+        document_id,
+        source_name=source.name,
+        category="人事甄選",
+        document_date=None,
+        organization=None,
+        subject="115年度代理教師甄選結果",
+        document_number=None,
+        aliases=[("subject", "案件名稱")],
+    )
+
+    listed = database.list_analysis_corrections()
+    assert listed[0].id == correction.id
+    assert listed[0].category == "人事甄選"
+    assert listed[0].aliases[0].label == "案件名稱"
+    assert database.list_field_aliases()[0].field_name == "subject"
+    assert database.delete_analysis_correction(correction.id)
+    assert database.list_analysis_corrections() == []
+    assert database.list_field_aliases() == []
+
+
 def test_failed_document_can_be_reclaimed_for_retry(tmp_path: Path) -> None:
     database = Database(tmp_path / "documents.sqlite3")
     source = tmp_path / "retry.pdf"

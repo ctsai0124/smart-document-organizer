@@ -10,6 +10,7 @@ from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -33,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .analyzer import is_localhost_url
+from .analyzer import KNOWN_CATEGORIES, is_localhost_url
 from .config import (
     APP_VERSION,
     RELEASE_DATE,
@@ -171,7 +172,7 @@ class MainWindow(QMainWindow):
 
         self.nav_buttons: list[QPushButton] = []
         for index, title in enumerate(
-            ("待確認清單", "處理紀錄", "命名記憶", "監聽設定")
+            ("待確認清單", "處理紀錄", "學習記憶", "監聽設定")
         ):
             nav = QPushButton(title)
             nav.setCheckable(True)
@@ -352,6 +353,28 @@ class MainWindow(QMainWindow):
         self.detail_reason = label("", "mutedText")
         self.detail_reason.setWordWrap(True)
         layout.addWidget(self.detail_reason)
+        layout.addSpacing(4)
+        layout.addWidget(label("人工校正（儲存後才會學習）", "sectionLabel"))
+        correction_form = QFormLayout()
+        correction_form.setSpacing(6)
+        self.correction_category = QComboBox()
+        self.correction_category.setEditable(True)
+        self.correction_category.addItems(sorted(KNOWN_CATEGORIES))
+        correction_form.addRow("分類", self.correction_category)
+        self.correction_date = QLineEdit()
+        self.correction_date.setPlaceholderText("YYYY-MM-DD")
+        correction_form.addRow("日期", self.correction_date)
+        self.correction_organization = QLineEdit()
+        correction_form.addRow("機關", self.correction_organization)
+        self.correction_subject = QLineEdit()
+        correction_form.addRow("主旨", self.correction_subject)
+        self.correction_document_number = QLineEdit()
+        correction_form.addRow("文號", self.correction_document_number)
+        layout.addLayout(correction_form)
+        self.save_correction_button = button("儲存校正並學習", primary=True)
+        self.save_correction_button.clicked.connect(self._save_analysis_correction)
+        self.save_correction_button.setEnabled(False)
+        layout.addWidget(self.save_correction_button)
         layout.addSpacing(6)
         layout.addWidget(label("OCR 文字預覽", "sectionLabel"))
         self.ocr_preview = QTextEdit()
@@ -408,8 +431,8 @@ class MainWindow(QMainWindow):
         layout.setSpacing(16)
         layout.addLayout(
             self._page_header(
-                "命名記憶",
-                "只記住你明確保留或修改過的名稱；每一筆都能查看與刪除。",
+                "學習記憶",
+                "只記住你明確確認過的檔名與欄位校正；每一筆都能查看與刪除。",
             )
         )
 
@@ -456,6 +479,7 @@ class MainWindow(QMainWindow):
         memory_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         memory_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         memory_header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(label("命名範例", "sectionLabel"))
         layout.addWidget(self.memory_table, 1)
 
         action_row = QHBoxLayout()
@@ -465,6 +489,43 @@ class MainWindow(QMainWindow):
         action_row.addWidget(self.delete_memory_button)
         action_row.addStretch(1)
         layout.addLayout(action_row)
+
+        layout.addWidget(label("分類與欄位校正", "sectionLabel"))
+        self.correction_memory_table = QTableWidget(0, 5)
+        self.correction_memory_table.setHorizontalHeaderLabels(
+            ("來源檔名", "校正分類", "校正主旨", "學到的欄位標籤", "校正時間")
+        )
+        self.correction_memory_table.setAlternatingRowColors(True)
+        self.correction_memory_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.correction_memory_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.correction_memory_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.correction_memory_table.verticalHeader().setVisible(False)
+        correction_header = self.correction_memory_table.horizontalHeader()
+        correction_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        correction_header.setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
+        )
+        correction_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        correction_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        correction_header.setSectionResizeMode(
+            4, QHeaderView.ResizeMode.ResizeToContents
+        )
+        layout.addWidget(self.correction_memory_table, 1)
+        correction_actions = QHBoxLayout()
+        self.delete_correction_button = button("刪除選取的校正記憶")
+        self.delete_correction_button.setProperty("danger", True)
+        self.delete_correction_button.clicked.connect(
+            self._delete_selected_analysis_correction
+        )
+        correction_actions.addWidget(self.delete_correction_button)
+        correction_actions.addStretch(1)
+        layout.addLayout(correction_actions)
         return page
 
     def _build_settings_page(self) -> QWidget:
@@ -525,7 +586,7 @@ class MainWindow(QMainWindow):
         rename_form.addRow("PDF 最多辨識頁數", self.max_pages_input)
         content_layout.addWidget(rename_card)
 
-        memory_card, memory_form = self._settings_card("本機命名記憶")
+        memory_card, memory_form = self._settings_card("本機學習記憶")
         memory_hint = label(
             "從「保留原名並學習」及你手動修改後套用的檔名建立範例。內容與記憶都只保存在本機 SQLite。",
             "mutedText",
@@ -545,6 +606,13 @@ class MainWindow(QMainWindow):
         )
         threshold_hint.setWordWrap(True)
         memory_form.addRow("", threshold_hint)
+        self.analysis_correction_checkbox = QCheckBox("使用人工校正改善分類與欄位辨識")
+        memory_form.addRow("", self.analysis_correction_checkbox)
+        self.analysis_correction_threshold_input = QDoubleSpinBox()
+        self.analysis_correction_threshold_input.setRange(0.50, 0.98)
+        self.analysis_correction_threshold_input.setSingleStep(0.01)
+        self.analysis_correction_threshold_input.setDecimals(2)
+        memory_form.addRow("校正相似度門檻", self.analysis_correction_threshold_input)
         content_layout.addWidget(memory_card)
 
         archive_card, archive_form = self._settings_card("分類歸檔")
@@ -646,6 +714,10 @@ class MainWindow(QMainWindow):
         self.max_pages_input.setValue(config.max_pdf_pages)
         self.naming_memory_checkbox.setChecked(config.naming_memory_enabled)
         self.naming_memory_threshold_input.setValue(config.naming_memory_threshold)
+        self.analysis_correction_checkbox.setChecked(config.analysis_correction_enabled)
+        self.analysis_correction_threshold_input.setValue(
+            config.analysis_correction_threshold
+        )
         self.archive_on_apply_checkbox.setChecked(config.archive_on_apply)
         self.auto_archive_checkbox.setChecked(config.auto_archive_enabled)
         self.archive_threshold_input.setValue(config.auto_archive_threshold)
@@ -682,6 +754,12 @@ class MainWindow(QMainWindow):
                 archive_rules=self._archive_rules_from_table(),
                 naming_memory_enabled=self.naming_memory_checkbox.isChecked(),
                 naming_memory_threshold=self.naming_memory_threshold_input.value(),
+                analysis_correction_enabled=(
+                    self.analysis_correction_checkbox.isChecked()
+                ),
+                analysis_correction_threshold=(
+                    self.analysis_correction_threshold_input.value()
+                ),
             )
             invalid_rules = [
                 category
@@ -906,6 +984,7 @@ class MainWindow(QMainWindow):
             self.ocr_preview.clear()
             self.confidence_bar.setValue(0)
             self.open_file_button.setEnabled(False)
+            self._clear_correction_fields()
 
     def refresh_history(self) -> None:
         records = self.database.list_documents(limit=500, include_ocr_text=False)
@@ -986,6 +1065,39 @@ class MainWindow(QMainWindow):
         self.delete_memory_button.setEnabled(bool(memories))
         if memories:
             self.memory_table.selectRow(0)
+        corrections = self.database.list_analysis_corrections(
+            limit=500, include_ocr_text=False
+        )
+        self.correction_memory_table.setRowCount(0)
+        field_names = {
+            "document_date": "日期",
+            "organization": "機關",
+            "subject": "主旨",
+            "document_number": "文號",
+        }
+        for row, correction in enumerate(corrections):
+            self.correction_memory_table.insertRow(row)
+            aliases = "、".join(
+                f"{field_names.get(alias.field_name, alias.field_name)}：{alias.label}"
+                for alias in correction.aliases
+            )
+            values = (
+                correction.source_name,
+                correction.category,
+                correction.subject or "—",
+                aliases or "—",
+                correction.updated_at.astimezone().strftime("%Y-%m-%d %H:%M"),
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, correction.id)
+                self.correction_memory_table.setItem(row, column, item)
+        self.memory_count.setText(str(len(memories) + len(corrections)))
+        self.delete_correction_button.setEnabled(bool(corrections))
+        if corrections:
+            self.correction_memory_table.selectRow(0)
 
     def _checked_rows(self) -> list[tuple[int, str]]:
         selected: list[tuple[int, str]] = []
@@ -1091,6 +1203,24 @@ class MainWindow(QMainWindow):
         self.pipeline.delete_naming_memory(memory_id)
         self.refresh_all()
 
+    def _delete_selected_analysis_correction(self) -> None:
+        row = self.correction_memory_table.currentRow()
+        if row < 0:
+            return
+        item = self.correction_memory_table.item(row, 0)
+        if not item:
+            return
+        correction_id = int(item.data(Qt.ItemDataRole.UserRole))
+        answer = QMessageBox.question(
+            self,
+            "刪除校正記憶",
+            f"確定刪除「{item.text()}」的分類與欄位校正嗎？\n原始文件不會被刪除或改名。",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.pipeline.delete_analysis_correction(correction_id)
+        self.refresh_all()
+
     def _show_selected_detail(self) -> None:
         row = self.queue_table.currentRow()
         if row < 0:
@@ -1112,6 +1242,48 @@ class MainWindow(QMainWindow):
         self.confidence_bar.setValue(round(record.confidence * 100))
         self.ocr_preview.setPlainText(record.ocr_text)
         self.open_file_button.setEnabled(record.current_path.exists())
+        self.correction_category.setCurrentText(record.category)
+        self.correction_date.setText(record.document_date or "")
+        self.correction_organization.setText(record.organization or "")
+        self.correction_subject.setText(record.subject or "")
+        self.correction_document_number.setText(record.document_number or "")
+        self.save_correction_button.setEnabled(True)
+
+    def _save_analysis_correction(self) -> None:
+        row = self.queue_table.currentRow()
+        if row < 0:
+            return
+        item = self.queue_table.item(row, 0)
+        if not item:
+            return
+        document_id = int(item.data(Qt.ItemDataRole.UserRole))
+        try:
+            correction = self.pipeline.correct_analysis(
+                document_id,
+                category=self.correction_category.currentText(),
+                document_date=self.correction_date.text(),
+                organization=self.correction_organization.text(),
+                subject=self.correction_subject.text(),
+                document_number=self.correction_document_number.text(),
+            )
+            learned = "、".join(alias.label for alias in correction.aliases)
+            detail = f"並學到欄位標籤：{learned}" if learned else "未新增欄位標籤"
+            QMessageBox.information(
+                self,
+                "校正已儲存",
+                f"已更新分類與欄位；{detail}。相似文件才會參考這筆記憶。",
+            )
+        except (ValueError, KeyError) as error:
+            QMessageBox.warning(self, "無法儲存校正", str(error))
+        self.refresh_all()
+
+    def _clear_correction_fields(self) -> None:
+        self.correction_category.setCurrentText("")
+        self.correction_date.clear()
+        self.correction_organization.clear()
+        self.correction_subject.clear()
+        self.correction_document_number.clear()
+        self.save_correction_button.setEnabled(False)
 
     def _open_selected_file(self) -> None:
         row = self.queue_table.currentRow()

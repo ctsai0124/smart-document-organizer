@@ -9,8 +9,8 @@ from pathlib import Path
 from platformdirs import user_config_dir, user_data_dir
 
 APP_NAME = "SmartDocumentOrganizer"
-APP_VERSION = "0.4.0"
-RELEASE_NAME = "看得見進度版"
+APP_VERSION = "0.5.0"
+RELEASE_NAME = "校正會學習版"
 RELEASE_DATE = "2026-10-28"
 
 
@@ -38,6 +38,8 @@ class AppConfig:
     archive_rules: dict[str, str] = field(default_factory=lambda: {"考核": "考核"})
     naming_memory_enabled: bool = True
     naming_memory_threshold: float = 0.68
+    analysis_correction_enabled: bool = True
+    analysis_correction_threshold: float = 0.75
 
     def __post_init__(self) -> None:
         if not self.scan_folder:
@@ -52,6 +54,9 @@ class AppConfig:
         )
         self.naming_memory_threshold = min(
             0.95, max(0.35, float(self.naming_memory_threshold))
+        )
+        self.analysis_correction_threshold = min(
+            0.98, max(0.50, float(self.analysis_correction_threshold))
         )
         rules = self.archive_rules if isinstance(self.archive_rules, dict) else {}
         self.archive_rules = {

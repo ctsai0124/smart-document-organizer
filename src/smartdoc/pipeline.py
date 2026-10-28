@@ -4,10 +4,16 @@ import logging
 import threading
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
-from .analyzer import LocalAIAnalyzer, RuleBasedAnalyzer
+from .analyzer import LocalAIAnalyzer, RuleBasedAnalyzer, render_analysis_stem
 from .config import AppConfig
+from .corrections import (
+    apply_field_aliases,
+    infer_field_aliases,
+    suggest_category_correction,
+)
 from .database import Database
 from .fileops import (
     is_supported,
@@ -23,6 +29,7 @@ from .learning import (
     suggest_from_memories,
 )
 from .models import (
+    AnalysisCorrectionRecord,
     AnalysisResult,
     DocumentRecord,
     DocumentStatus,
@@ -140,6 +147,36 @@ class DocumentPipeline:
                     4,
                 )
             analysis = LocalAIAnalyzer(config).analyze(ocr.text, analysis)
+            correction_suggestion = None
+            if config.analysis_correction_enabled:
+                analysis = apply_field_aliases(
+                    ocr.text,
+                    analysis,
+                    self.database.list_field_aliases(limit=1000),
+                    template=config.filename_template,
+                )
+                correction_suggestion = suggest_category_correction(
+                    self.database.list_analysis_corrections(limit=200),
+                    ocr.text,
+                    threshold=config.analysis_correction_threshold,
+                )
+                if correction_suggestion:
+                    corrected = replace(
+                        analysis,
+                        category=correction_suggestion.category,
+                        confidence=min(analysis.confidence, 0.90),
+                        reason=(
+                            f"{analysis.reason}；參考人工校正「"
+                            f"{correction_suggestion.example_name}」"
+                            f"（相似 {correction_suggestion.similarity:.0%}）"
+                        ),
+                    )
+                    analysis = replace(
+                        corrected,
+                        suggested_stem=render_analysis_stem(
+                            config.filename_template, corrected
+                        ),
+                    )
             memory_suggestion = None
             if config.naming_memory_enabled:
                 self._progress(path, "memory", "比對已確認的命名記憶", 5)
@@ -182,6 +219,10 @@ class DocumentPipeline:
                 and (
                     memory_suggestion is None
                     or memory_suggestion.similarity >= config.auto_rename_threshold
+                )
+                and (
+                    correction_suggestion is None
+                    or correction_suggestion.similarity >= config.auto_rename_threshold
                 )
             )
             auto_archive = (
@@ -311,6 +352,75 @@ class DocumentPipeline:
             self.on_change()
         return deleted
 
+    def correct_analysis(
+        self,
+        document_id: int,
+        *,
+        category: str,
+        document_date: str | None,
+        organization: str | None,
+        subject: str | None,
+        document_number: str | None,
+    ) -> AnalysisCorrectionRecord:
+        document = self._required_document(document_id)
+        if document.status is not DocumentStatus.PENDING:
+            raise ValueError("只有待確認文件可以儲存分析校正")
+        if not document.ocr_text.strip():
+            raise ValueError("這份文件沒有可供學習的 OCR 文字")
+
+        cleaned_category = self._clean_correction_value(category, 40)
+        if not cleaned_category:
+            raise ValueError("分類不可空白")
+        cleaned_date = self._clean_correction_value(document_date, 10)
+        if cleaned_date:
+            try:
+                date.fromisoformat(cleaned_date)
+            except ValueError as error:
+                raise ValueError("日期請使用 YYYY-MM-DD 格式") from error
+        cleaned_organization = self._clean_correction_value(organization, 80)
+        cleaned_subject = self._clean_correction_value(subject, 120)
+        cleaned_document_number = self._clean_correction_value(document_number, 80)
+        config = self.get_config()
+        corrected = AnalysisResult(
+            suggested_stem="",
+            category=cleaned_category,
+            document_date=cleaned_date,
+            organization=cleaned_organization,
+            subject=cleaned_subject,
+            document_number=cleaned_document_number,
+            confidence=1.0,
+            reason="人工校正並加入本機學習記憶",
+        )
+        corrected = replace(
+            corrected,
+            suggested_stem=render_analysis_stem(config.filename_template, corrected),
+        )
+        suggested_name = (
+            f"{corrected.suggested_stem}{document.current_path.suffix.lower()}"
+        )
+        aliases = infer_field_aliases(document.ocr_text, corrected)
+        memory = self.database.save_analysis_correction(
+            document.id,
+            source_name=document.original_path.name,
+            category=corrected.category,
+            document_date=corrected.document_date,
+            organization=corrected.organization,
+            subject=corrected.subject,
+            document_number=corrected.document_number,
+            aliases=aliases,
+            suggested_name=suggested_name,
+            confidence=corrected.confidence,
+            summary=corrected.reason,
+        )
+        self.on_change()
+        return memory
+
+    def delete_analysis_correction(self, correction_id: int) -> bool:
+        deleted = self.database.delete_analysis_correction(correction_id)
+        if deleted:
+            self.on_change()
+        return deleted
+
     def undo(self, document_id: int) -> Path:
         document = self._required_document(document_id)
         rename = self.database.latest_active_rename(document_id)
@@ -342,6 +452,11 @@ class DocumentPipeline:
         if document is None:
             raise KeyError(f"找不到文件紀錄：{document_id}")
         return document
+
+    @staticmethod
+    def _clean_correction_value(value: str | None, maximum: int) -> str | None:
+        cleaned = " ".join((value or "").split()).strip()
+        return cleaned[:maximum] or None
 
     def _progress(
         self,

@@ -48,6 +48,9 @@ def test_main_window_builds_with_archive_settings(tmp_path: Path) -> None:
     assert window.pages.count() == 4
     assert window.naming_memory_checkbox.isChecked()
     assert window.memory_table.columnCount() == 5
+    assert window.analysis_correction_checkbox.isChecked()
+    assert window.correction_memory_table.columnCount() == 5
+    assert not window.save_correction_button.isEnabled()
     assert not window.retry_history_button.isEnabled()
     assert window.monitor_toggle_button.text() == "開始監聽"
 

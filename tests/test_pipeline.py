@@ -62,6 +62,19 @@ class FlakyOcr:
         return OcrResult(text=OCR_TEXT, confidence=0.98, pages_processed=1)
 
 
+class CorrectionLearningOcr:
+    def recognize(self, path: Path, max_pdf_pages: int = 12) -> OcrResult:
+        year = "116" if "116" in path.name else "115"
+        return OcrResult(
+            text=f"""某校人事資料
+案件名稱：{year}年度代理教師甄選結果
+承辦單位：人事室
+""",
+            confidence=0.98,
+            pages_processed=1,
+        )
+
+
 def test_pending_apply_and_undo(tmp_path: Path) -> None:
     source = tmp_path / "scan_001.pdf"
     source.write_bytes(b"fake pdf")
@@ -189,6 +202,47 @@ def test_confirmed_original_name_teaches_future_suggestion(tmp_path: Path) -> No
     assert incoming_document is not None
     assert incoming_document.suggested_name == "116年度教師成績考核名冊.pdf"
     assert "參考本機命名記憶" in incoming_document.summary
+
+
+def test_manual_analysis_correction_teaches_similar_future_document(
+    tmp_path: Path,
+) -> None:
+    scan_folder = tmp_path / "scans"
+    scan_folder.mkdir()
+    database = Database(tmp_path / "documents.sqlite3")
+    config = AppConfig(
+        scan_folder=str(scan_folder),
+        naming_memory_enabled=False,
+        analysis_correction_enabled=True,
+        analysis_correction_threshold=0.50,
+    )
+    pipeline = DocumentPipeline(database, CorrectionLearningOcr(), lambda: config)
+
+    example = scan_folder / "scan_115.pdf"
+    example.write_bytes(b"correction-115")
+    example_id = pipeline.process(example, wait_for_file=False)
+    correction = pipeline.correct_analysis(
+        example_id,
+        category="人事甄選",
+        document_date=None,
+        organization="某校人事室",
+        subject="115年度代理教師甄選結果",
+        document_number=None,
+    )
+    assert [(alias.field_name, alias.label) for alias in correction.aliases] == [
+        ("subject", "案件名稱")
+    ]
+
+    incoming = scan_folder / "scan_116.pdf"
+    incoming.write_bytes(b"correction-116")
+    incoming_id = pipeline.process(incoming, wait_for_file=False)
+    learned = database.get_document(incoming_id)
+
+    assert learned is not None
+    assert learned.category == "人事甄選"
+    assert learned.subject == "116年度代理教師甄選結果"
+    assert "參考人工校正" in learned.summary
+    assert "案件名稱" in learned.summary
 
 
 def test_default_scanner_name_is_rejected_as_memory(tmp_path: Path) -> None:

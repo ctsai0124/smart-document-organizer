@@ -201,6 +201,21 @@ def _trim_subject(value: str) -> str:
     return sanitize_filename_stem(value)[:52]
 
 
+def render_analysis_stem(template: str, analysis: AnalysisResult) -> str:
+    values = {
+        "date": analysis.document_date or "",
+        "category": analysis.category,
+        "subject": analysis.subject or analysis.organization or "",
+        "organization": analysis.organization or "",
+        "document_number": analysis.document_number or "",
+    }
+    try:
+        stem = template.format_map(values)
+    except (KeyError, ValueError):
+        stem = "{date}_{category}_{subject}".format_map(values)
+    return sanitize_filename_stem(stem.replace("__", "_"))
+
+
 class RuleBasedAnalyzer:
     def analyze(
         self,
@@ -240,18 +255,17 @@ class RuleBasedAnalyzer:
         elif not explicit_subject:
             confidence = min(confidence, 0.82)
 
-        values = {
-            "date": document_date or "",
-            "category": category,
-            "subject": subject or organization or "",
-            "organization": organization or "",
-            "document_number": document_number or "",
-        }
-        try:
-            stem = template.format_map(values)
-        except (KeyError, ValueError):
-            stem = "{date}_{category}_{subject}".format_map(values)
-        stem = sanitize_filename_stem(stem.replace("__", "_"))
+        partial = AnalysisResult(
+            suggested_stem="",
+            category=category,
+            document_date=document_date,
+            organization=organization,
+            subject=subject,
+            document_number=document_number,
+            confidence=0,
+            reason="",
+        )
+        stem = render_analysis_stem(template, partial)
         reason_parts = [f"分類為{category}"]
         if document_date:
             reason_parts.append(f"辨識日期 {document_date}")

@@ -15,6 +15,8 @@ def test_config_round_trip(tmp_path: Path) -> None:
         archive_rules={"考核": str(tmp_path / "人事" / "考核")},
         naming_memory_enabled=False,
         naming_memory_threshold=0.66,
+        analysis_correction_enabled=False,
+        analysis_correction_threshold=0.81,
     )
 
     store.save(expected)
@@ -29,6 +31,8 @@ def test_config_round_trip(tmp_path: Path) -> None:
     assert actual.archive_rules == expected.archive_rules
     assert actual.naming_memory_enabled is False
     assert actual.naming_memory_threshold == 0.66
+    assert actual.analysis_correction_enabled is False
+    assert actual.analysis_correction_threshold == 0.81
 
 
 def test_relative_archive_destination_uses_scan_folder(tmp_path: Path) -> None:

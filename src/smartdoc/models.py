@@ -70,6 +70,31 @@ class NamingMemoryRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class FieldAliasRecord:
+    id: int
+    correction_id: int
+    field_name: str
+    label: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisCorrectionRecord:
+    id: int
+    document_id: int
+    source_name: str
+    category: str
+    document_date: str | None
+    organization: str | None
+    subject: str | None
+    document_number: str | None
+    ocr_text: str
+    aliases: tuple[FieldAliasRecord, ...]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class ProcessingProgress:
     path: Path
     stage: str
