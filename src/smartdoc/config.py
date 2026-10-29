@@ -9,9 +9,9 @@ from pathlib import Path
 from platformdirs import user_config_dir, user_data_dir
 
 APP_NAME = "SmartDocumentOrganizer"
-APP_VERSION = "0.5.0"
-RELEASE_NAME = "校正會學習版"
-RELEASE_DATE = "2026-10-28"
+APP_VERSION = "0.5.1"
+RELEASE_NAME = "網路共享修正版"
+RELEASE_DATE = "2026-10-29"
 
 
 def default_scan_folder() -> str:
@@ -69,13 +69,30 @@ class AppConfig:
         configured = self.archive_rules.get(category.strip())
         if not configured:
             return None
-        destination = Path(os.path.expandvars(configured)).expanduser()
-        if not destination.is_absolute():
-            scan_root = Path(self.scan_folder).expanduser().resolve()
-            destination = (scan_root / destination).resolve()
-            if not destination.is_relative_to(scan_root):
-                return None
-        return destination.resolve()
+        destination = _safe_archive_path(self.scan_folder, configured)
+        return Path(destination) if destination else None
+
+
+def _safe_archive_path(
+    scan_folder: str, configured: str, *, path_module=os.path
+) -> str | None:
+    """Normalize an archive path without touching an unavailable network share."""
+    expanded = os.path.expandvars(os.path.expanduser(configured))
+    destination = path_module.normpath(expanded)
+    if path_module.isabs(destination):
+        return destination
+
+    root = path_module.normpath(os.path.expandvars(os.path.expanduser(scan_folder)))
+    if not path_module.isabs(root):
+        root = path_module.normpath(path_module.join(os.getcwd(), root))
+    candidate = path_module.normpath(path_module.join(root, destination))
+    try:
+        common = path_module.commonpath((root, candidate))
+    except ValueError:
+        return None
+    if path_module.normcase(common) != path_module.normcase(root):
+        return None
+    return candidate
 
 
 class ConfigStore:

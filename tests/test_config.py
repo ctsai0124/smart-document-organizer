@@ -1,6 +1,7 @@
+import ntpath
 from pathlib import Path
 
-from smartdoc.config import AppConfig, ConfigStore
+from smartdoc.config import AppConfig, ConfigStore, _safe_archive_path
 
 
 def test_config_round_trip(tmp_path: Path) -> None:
@@ -74,3 +75,26 @@ def test_absolute_archive_destination_may_be_outside_scan_folder(
     )
 
     assert config.archive_destination("考核") == destination
+
+
+def test_unc_archive_destination_is_normalized_without_network_access() -> None:
+    destination = _safe_archive_path(
+        r"\\server\share\Scans", "考核", path_module=ntpath
+    )
+
+    assert destination == r"\\server\share\Scans\考核"
+
+
+def test_archive_destination_does_not_resolve_the_scan_folder(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fail_resolve(*args, **kwargs):
+        raise OSError("network credentials unavailable")
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+    config = AppConfig(
+        scan_folder=str(tmp_path / "scans"), archive_rules={"考核": "考核"}
+    )
+
+    assert config.archive_destination("考核") == tmp_path / "scans" / "考核"

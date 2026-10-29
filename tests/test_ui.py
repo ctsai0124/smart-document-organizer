@@ -118,3 +118,48 @@ def test_main_window_builds_with_archive_settings(tmp_path: Path) -> None:
     window.close()
     watcher.close()
     app.processEvents()
+
+
+def test_main_window_starts_when_unc_share_cannot_be_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    config = AppConfig(scan_folder=r"\\server\share\Scans")
+    database = Database(tmp_path / "documents.sqlite3")
+    source = tmp_path / "pending.pdf"
+    document_id = database.create_processing(source, "sha256:unc-startup")
+    database.complete_analysis(
+        document_id,
+        suggested_name="考核.pdf",
+        confidence=0.9,
+        category="考核",
+        ocr_text="主旨：考核",
+        summary="分類為考核",
+    )
+
+    def fail_resolve(*args, **kwargs):
+        raise OSError("network credentials unavailable")
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+    bridge = UiBridge()
+    pipeline = DocumentPipeline(database, NoopOcr(), lambda: config)
+    watcher = FolderWatcher(pipeline)
+    window = MainWindow(
+        database=database,
+        config_store=ConfigStore(tmp_path / "settings.json"),
+        get_config=lambda: config,
+        save_config=lambda value: None,
+        pipeline=pipeline,
+        watcher=watcher,
+        bridge=bridge,
+    )
+
+    assert window.queue_table.rowCount() == 1
+    assert window.queue_table.item(0, 4).text() == r"\\server\share\Scans\考核"
+
+    window.allow_close = True
+    window.close()
+    watcher.close()
+    app.processEvents()
